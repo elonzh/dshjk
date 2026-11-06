@@ -11,13 +11,13 @@ flowchart LR
   Client --> Transport[内部 RuntimeConnection]
   Transport -->|双向 JSONL RPC / stdio| Runtime[原生 dsh profile]
   Runtime --> Plugins[Cordis plugins / MCP / 模型]
-  Runtime --> Home[显式 DSH_HOME / 持久化]
+  Runtime --> Home[原生 home 发现 / 持久化]
   Client --> Protocol[protocol / configuration / error]
 ```
 
 `protocol` 定义 wire 模型和边界解析；`configuration` 定义启动参数；`client/internal` 独占进程、stdio、RPC 关联、回调与事件分发。`HarnessClient` 暴露协议操作，`DeepSeekHarness` 负责一次初始化，`HarnessSession` 负责输入活动的收集。两种语言共享这些类型和实现；Java 阻塞入口委托 suspend 方法，使用 `@JvmSynthetic` 隐藏 Continuation 签名。
 
-一个 Harness 对应一个子进程，可管理多个 Session。运行时拥有 Agent loop、Session history、模型路由、工具、审批策略、工作目录、goal/plan 状态及持久化；SDK 仅保存初始化状态、RPC 等待项、Session 句柄和通知订阅。`session(id)` 是惰性句柄；相同 id 对应同一原生会话，新的独立任务应使用不同 id。
+一个 Harness 对应一个子进程，可管理多个 Session。运行时拥有 Agent loop、Session history、模型路由、工具、审批策略、工作目录、goal/plan 状态及持久化；SDK 仅保存初始化状态、RPC 等待项、Session 句柄和通知订阅。`DeepSeekHarness()` 可直接使用默认配置。`session()` 是惰性句柄，自动生成官方 SDK 格式的 `session-<32 位十六进制 UUID>`；相同句柄上的多次输入继续同一会话。`run(input)` 每次创建新会话，显式 `session(id)` 则使用调用者提供的 ID。SDK 协议要求请求携带 ID，自动生成逻辑集中在创建句柄时，与官方客户端一致。
 
 ## 完整 SDK 操作
 
@@ -55,6 +55,10 @@ val result = session.run(input)
 多个 Session 或同 Session 的输入可以重叠；每次调用持有独立订阅，不会竞争消费同一队列。普通输入的活动区间可能包含同 Session 的重叠工作，与官方 SDK 一致。observer 按接收顺序同步执行；其异常结束本次收集并释放订阅，不撤销已提交给运行时的工作。
 
 ## 事件订阅
+
+原生 SDK 推送已记录的 `session.event` 和状态通知，assistant 文本随每个模型步骤结算后的 `assistant/message` 到达。`AssistantMessage.stream` 是该次模型尝试的历史分块记录，不能据此宣称接收到了生成过程中的实时 token delta。消费方应在事件到达时输出该条消息的文本，并同时处理工具调用、工具结果和状态变化。
+
+可运行的 [Kotlin Flow 示例](../examples/kotlin/src/main/kotlin/example/KotlinExample.kt) 和 [Java JDK Publisher 示例](../examples/java/src/main/java/example/JavaExample.java) 都先创建独立订阅，再开始 `run()`；主 Session 文本输出到 stdout，工具、命令、子 Agent、状态和结束原因输出到 stderr。命令有文本结果时也写入 stdout。输入结束后关闭运行时，等待已收到的事件排空，再释放订阅；正常关闭导致的 `TransportClosedException` 在示例中作为结束信号，其他订阅错误继续向调用者传播。结果文本已由事件处理器输出，因此不会再次打印 `finalResponse`。
 
 六个已知 SDK 通知都有独立类型：`Event`、`Status`、`QueryCompleted`、`SubagentStarted`、`SubagentFinished`、`QuestionCancelled`。`method` 使用 `NotificationMethod`；内置方法是 `NotificationMethod.Builtin` 枚举，新增通知使用 `Extension`，所有通知保留原始 params。
 
@@ -121,11 +125,11 @@ Java 使用 builder 的同名方法和相同 SAM 接口。`approval/request` 返
 
 | 配置 | 默认值/用途 |
 | --- | --- |
-| `dshHome` | 必填，显式子进程 `DSH_HOME` |
+| `dshHome` | 可选；省略时由原生运行时按 `DSH_HOME` → `~/.dsh` 发现，显式值优先 |
 | `runtime` | PATH 上的 `dsh`；可用 `RuntimeCommand.node(cli, node)` 选择 JS CLI |
 | `profile` / `patches` | `sdk` / 空；按顺序传递绝对 `--patch` 文件 |
 | `cwd` / `processCwd` | JVM 当前目录 / cwd；分别表示 Agent workspace 与子进程目录 |
-| `environment` / `inheritEnvironment` | 空 / true；覆盖继承环境，false 表示完整替换，DSH_HOME 始终来自显式配置 |
+| `environment` / `inheritEnvironment` | 空 / true；覆盖继承环境，false 表示完整替换；仅显式设置 `dshHome` 时覆盖子进程的 `DSH_HOME` |
 | `provider` / `model` | `deepseek-official` / `deepseek-v4-flash` |
 | `reasoningEffort` / `maxTokens` | 留空，使用适配器默认；配置时必须非空/正整数 |
 | `initializeTimeout` | 30 秒，等待首次 profile 握手 |
@@ -133,7 +137,7 @@ Java 使用 builder 的同名方法和相同 SAM 接口。`approval/request` 返
 | `shutdownTimeout` / `eofGrace` / `terminateGrace` | 1 / 6 / 3 秒 |
 | `notificationBufferCapacity` | 8192，每个订阅独立 |
 
-配置通过构造器或 Java builder 创建，集合在边界复制为不可修改值。启动参数按 argv 传递，不经 shell 解释；`RuntimeCommand.of` 支持显式 launcher 前缀，例如自定义 Node loader。SDK 不修改宿主全局环境。
+配置通过可省略的 `HarnessConfig()` 或 Java `HarnessConfig.builder()` 创建，集合在边界复制为不可修改值。省略 `dshHome` 时，SDK 保留子进程环境，由运行时解析 home，包括空白环境值回退和 `~` 展开；SDK 不在 JVM 内复制发现算法。启动参数按 argv 传递，不经 shell 解释；`RuntimeCommand.of` 支持显式 launcher 前缀，例如自定义 Node loader。SDK 不修改宿主全局环境。
 
 Kotlin 用 `closeAsync()`，Java 用 try-with-resources 的 `close()`；两者执行同一关闭实现。关闭先停止宿主回调，然后请求 shutdown、关闭 stdin 等待原生 EOF 清理，再依次 terminate / force terminate，并确认根运行时进程已退出。关闭幂等且终态，不能重新启动。Kotlin 的关闭使用 NonCancellable 以完成资源回收。
 
@@ -161,4 +165,4 @@ Kotlin 用 `closeAsync()`，Java 用 try-with-resources 的 `close()`；两者�
 
 协议基线：上游 checkout `fcc0ad4621`，公开 npm CLI `@deepseek-ai/dsh@0.2.2-rc.1`。权威协议是上游 `packages/sdk/protocol/src/types.ts`；SDK 高层活动算法对齐该版本 TS/Python SDK。库不强制所有未来运行时与基线版本相等，但只宣称对基线完成验证。
 
-本地验证覆盖 JDK 17/21、Java/Kotlin 消费、双向 RPC、Unicode、命令关联、并发 Session、独立订阅与溢出、回调嵌套请求、取消与超时、stderr、握手失败/异常退出/强制回收。未经修改的真实 CLI 配合本地 Messages HTTP 夹具，覆盖 sdk-minimal 的模型请求/并发/持久化恢复/工作目录，以及完整 sdk 的 permission/compact/max-tokens/用户问题。CI 配置覆盖 Linux/macOS/Windows；本机执行只代表 macOS，真实云模型、Windows/Linux 平台、图片入库、MCP 服务接入与具体外部工具仍需相应环境验证。
+本地验证覆盖 JDK 17/21、Java/Kotlin 消费、双向 RPC、Unicode、命令关联、并发 Session、独立订阅与溢出、回调嵌套请求、取消与超时、stderr、握手失败/异常退出/强制回收。未经修改的真实 CLI 配合本地 Messages HTTP 夹具，覆盖 sdk-minimal 的模型请求/并发/自动 Session ID 与恢复/工作目录/home 默认发现与配置优先级，以及完整 sdk 的 permission/compact/max-tokens/用户问题。CI 配置覆盖 Linux/macOS/Windows；本机执行只代表 macOS，真实云模型、Windows/Linux 平台、图片入库、MCP 服务接入与具体外部工具仍需相应环境验证。

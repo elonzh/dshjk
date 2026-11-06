@@ -43,6 +43,16 @@ public class JavaInteropTest {
             assertEquals("low-level", harness.getClient().prompt("raw", HarnessProtocol.text("prompt")).getMessageId());
         }
     }
+    @Test void defaultConstructorsAndOptionalHomeBuilderWorkWithoutLaunching() {
+        assertNull(new HarnessConfig().getDshHome());
+        assertNull(HarnessConfig.builder().build().getDshHome());
+        assertEquals(root, HarnessConfig.builder().dshHome(root).build().getDshHome());
+        try (var harness = new DeepSeekHarness(); var client = new com.elonzh.dshjk.client.HarnessClient()) {
+            assertNull(harness.getClient().getPid());
+            assertTrue(harness.session().getId().matches("session-[0-9a-f]{32}"));
+            assertNull(client.getPid());
+        }
+    }
     @Test void nativeEventDataAndStatesAreUsableFromJava17() {
         var raw = HarnessProtocol.json.parseToJsonElement(
             "{\"type\":\"turn/end\",\"seq\":1,\"time\":42,\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}");

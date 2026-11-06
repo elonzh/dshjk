@@ -8,7 +8,7 @@ import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 
 /** Low-level native SDK operations. Initialize once before creating or restoring sessions. */
-class HarnessClient(val config: HarnessConfig) : AutoCloseable {
+class HarnessClient @JvmOverloads constructor(val config: HarnessConfig = HarnessConfig()) : AutoCloseable {
     private val connection = RuntimeConnection(config)
     val pid: Long? get() = connection.pid
     val isAlive: Boolean get() = connection.isAlive

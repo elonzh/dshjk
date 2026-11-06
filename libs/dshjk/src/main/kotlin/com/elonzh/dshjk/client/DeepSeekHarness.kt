@@ -8,7 +8,7 @@ import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 
 /** One lazily initialized runtime, shared by multiple independent sessions. Always close the owner. */
-class DeepSeekHarness(val config: HarnessConfig) : AutoCloseable {
+class DeepSeekHarness @JvmOverloads constructor(val config: HarnessConfig = HarnessConfig()) : AutoCloseable {
     val client = HarnessClient(config)
     private val lifecycle = Mutex()
     private var initialized: InitializeResult? = null
@@ -26,16 +26,17 @@ class DeepSeekHarness(val config: HarnessConfig) : AutoCloseable {
             throw error
         }
     }
-    /** A lazy handle creates no runtime resources until its first operation. */
-    @JvmOverloads fun session(id: String = "session-${UUID.randomUUID()}"): HarnessSession {
-        require(id.isNotBlank()); return HarnessSession(this, id)
+    /** Lazy handle; omitted ids follow the native SDK session-<UUID hex> convention. */
+    @JvmOverloads fun session(id: String? = null): HarnessSession {
+        val sessionId = id ?: "session-${UUID.randomUUID().toString().replace("-", "")}"
+        require(sessionId.isNotBlank()); return HarnessSession(this, sessionId)
     }
     @JvmSynthetic suspend fun resumeSession(id: String): HarnessSession {
         start(); client.resumeSession(id); return session(id)
     }
-    @JvmSynthetic suspend fun run(input: String, sessionId: String = "session-${UUID.randomUUID()}", observer: NotificationObserver? = null): RunResult =
+    @JvmSynthetic suspend fun run(input: String, sessionId: String? = null, observer: NotificationObserver? = null): RunResult =
         session(sessionId).run(input, observer)
-    @JvmSynthetic suspend fun run(input: List<ContentBlock>, sessionId: String = "session-${UUID.randomUUID()}", observer: NotificationObserver? = null): RunResult =
+    @JvmSynthetic suspend fun run(input: List<ContentBlock>, sessionId: String? = null, observer: NotificationObserver? = null): RunResult =
         session(sessionId).run(input, observer)
     @JvmSynthetic suspend fun closeAsync() = withContext(NonCancellable) {
         // Teardown must not wait for an initialize response holding lifecycle.
@@ -45,8 +46,8 @@ class DeepSeekHarness(val config: HarnessConfig) : AutoCloseable {
     override fun close() = runBlocking { closeAsync() }
     @JvmName("start") fun startBlocking(): InitializeResult = runBlocking { start() }
     @JvmName("resumeSession") fun resumeSessionBlocking(id: String): HarnessSession = runBlocking { resumeSession(id) }
-    @JvmName("run") @JvmOverloads fun runBlocking(input: String, sessionId: String = "session-${UUID.randomUUID()}", observer: NotificationObserver? = null): RunResult =
+    @JvmName("run") @JvmOverloads fun runBlocking(input: String, sessionId: String? = null, observer: NotificationObserver? = null): RunResult =
         runBlocking { run(input, sessionId, observer) }
-    @JvmName("run") @JvmOverloads fun runBlocking(input: List<ContentBlock>, sessionId: String = "session-${UUID.randomUUID()}", observer: NotificationObserver? = null): RunResult =
+    @JvmName("run") @JvmOverloads fun runBlocking(input: List<ContentBlock>, sessionId: String? = null, observer: NotificationObserver? = null): RunResult =
         runBlocking { run(input, sessionId, observer) }
 }

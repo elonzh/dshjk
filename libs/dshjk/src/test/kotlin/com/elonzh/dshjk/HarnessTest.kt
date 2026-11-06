@@ -26,6 +26,30 @@ class HarnessTest {
         initializeTimeout = Duration.ofMillis(if (mode == "hang") 200 else 2000), eofGrace = Duration.ofMillis(100), terminateGrace = Duration.ofMillis(100),
         notificationBufferCapacity = capacity, approvalHandler = approval, userQuestionHandler = question,
     )
+    @Test fun `default entry points need no configuration or runtime launch`(): Unit = runBlocking {
+        assertNull(HarnessConfig().dshHome)
+        assertNull(HarnessConfig.builder().build().dshHome)
+        assertEquals(root, HarnessConfig.builder().dshHome(root).build().dshHome)
+        DeepSeekHarness().use { h ->
+            assertNull(h.client.pid)
+            assertTrue(h.session().id.matches(Regex("session-[0-9a-f]{32}")))
+            assertEquals("custom-id", h.session("custom-id").id)
+            assertNull(h.client.pid)
+        }
+    }
+    @Test fun `implicit runs use fresh official SDK ids and a session handle keeps its identity`(): Unit = runBlocking {
+        DeepSeekHarness(config()).use { h ->
+            val session = h.session()
+            assertEquals(session.id, session.run("first").sessionId)
+            assertEquals(session.id, session.run("second").sessionId)
+            val first = h.run("fresh one")
+            val second = h.run("fresh two")
+            assertTrue(first.sessionId.matches(Regex("session-[0-9a-f]{32}")))
+            assertTrue(second.sessionId.matches(Regex("session-[0-9a-f]{32}")))
+            assertNotEquals(first.sessionId, second.sessionId)
+            assertNotEquals(session.id, first.sessionId)
+        }
+    }
     @Test fun `prompt and native commands collect correlated activity without child text replacing root`(): Unit = runBlocking {
         DeepSeekHarness(config()).use { h ->
             val r = h.run("你好 😀", "one")

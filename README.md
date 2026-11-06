@@ -7,41 +7,73 @@ SDK 直接启动原生 `dsh --profile sdk`，通过双向 JSONL JSON-RPC 2.0 通
 ## Kotlin
 
 ```kotlin
-val config = HarnessConfig(
-    dshHome = Path.of("/absolute/path/to/isolated-home"),
-    cwd = Path.of("/absolute/path/to/workspace"),
-    runtime = RuntimeCommand.node(Path.of("/path/to/@deepseek-ai/dsh/lib/bin.js")),
-)
-val harness = DeepSeekHarness(config)
+val harness = DeepSeekHarness()
 try {
-    val session = harness.session("my-session")
-    val result = session.run("帮我分析这个项目")
-    println(result.finalResponse)
+    val session = harness.session()
+    session.run("帮我分析这个项目", NotificationObserver { notification ->
+        if (notification is HarnessNotification.Event && notification.sessionId == session.id) {
+            when (val data = notification.event.data) {
+                is SessionEventData.AssistantMessage -> {
+                    data.message.content.filterIsInstance<ContentBlock.Text>().forEach { print(it.text) }
+                    System.out.flush()
+                }
+                is SessionEventData.ToolCalled -> System.err.println("工具：${data.name}")
+                is SessionEventData.TurnEnded -> System.err.println("结束：${data.reason.kind.wireName}")
+                else -> Unit
+            }
+        }
+    })
 } finally {
     harness.closeAsync()
 }
 ```
 
-完整导入和启动方式见 [Kotlin 示例](examples/kotlin/src/main/kotlin/example/KotlinExample.kt)。也可使用 `runtime = RuntimeCommand.executable("dsh")` 运行已安装的 CLI。
+完整 [Kotlin 示例](examples/kotlin/src/main/kotlin/example/KotlinExample.kt) 使用独立协程收集 `Flow`，处理文本、工具、命令、状态与子 Agent 事件。默认使用 PATH 上的 `dsh`、官方 `sdk` profile 和当前工作目录。
 
 ## Java
 
 ```java
-var config = HarnessConfig.builder(Path.of("/absolute/path/to/isolated-home"))
-    .cwd(Path.of("/absolute/path/to/workspace"))
-    .runtime(RuntimeCommand.node(Path.of("/path/to/@deepseek-ai/dsh/lib/bin.js")))
-    .build();
-try (var harness = new DeepSeekHarness(config)) {
-    var result = harness.session("my-session").run("帮我分析这个项目");
-    System.out.println(result.getFinalResponse());
+try (var harness = new DeepSeekHarness()) {
+    var session = harness.session();
+    session.run("帮我分析这个项目", notification -> {
+        if (notification instanceof HarnessNotification.Event event && event.getSessionId().equals(session.getId())) {
+            var data = event.getEvent().getData();
+            if (data instanceof SessionEventData.AssistantMessage message) {
+                for (var block : message.getMessage().getContent()) {
+                    if (block instanceof ContentBlock.Text text) System.out.print(text.getText());
+                }
+                System.out.flush();
+            } else if (data instanceof SessionEventData.ToolCalled call) {
+                System.err.println("工具：" + call.getName());
+            } else if (data instanceof SessionEventData.TurnEnded turn) {
+                System.err.println("结束：" + turn.getReason().getKind().getWireName());
+            }
+        }
+    });
 }
 ```
 
-完整导入和启动方式见 [Java 示例](examples/java/src/main/java/example/JavaExample.java)。Java 无需 Continuation、runBlocking 或额外语言适配包。
+完整 [Java 示例](examples/java/src/main/java/example/JavaExample.java) 使用 JDK `Flow.Subscriber`，展示 demand、错误传播、取消和队列排空。Java 无需 Continuation、runBlocking 或额外语言适配包。
+
+## 会话与可选配置
+
+`harness.run(input)` 自动创建独立会话，ID 遵循官方 SDK 的 `session-<32 位十六进制 UUID>` 格式。要连续对话，保留 `harness.session()` 返回的句柄并多次调用 `session.run(input)`；结果中的 `sessionId` 可用于后续恢复。也可通过 `session(id)` 使用显式 ID。
+
+按需覆盖工作目录、home 或运行时路径：
+
+```kotlin
+val harness = DeepSeekHarness(HarnessConfig(
+    cwd = Path.of("/path/to/workspace"),
+    dshHome = Path.of("/path/to/isolated-home"),
+    runtime = RuntimeCommand.node(Path.of("/path/to/@deepseek-ai/dsh/lib/bin.js")),
+))
+```
+
+Java 使用 `HarnessConfig.builder().cwd(...).dshHome(...).runtime(...).build()`，各项均可省略。
 
 ## 构建与使用
 
-构建需要 JDK 17（测试可切换 JDK 21），运行 npm CLI 需要 Node.js 24.9+。Gradle Wrapper、Kotlin 和依赖版本均已固定。`dsh` 由宿主安装；库不会下载运行时或读取默认的 `~/.dsh`，每次使用必须明确指定 Harness home。模型凭据通过原生 profile 或 `HarnessConfig.environment` 提供。
+构建需要 JDK 17（测试可切换 JDK 21），运行 npm CLI 需要 Node.js 24.9+。Gradle Wrapper、Kotlin 和依赖版本均已固定。`dsh` 由宿主安装。省略 home 时，原生运行时使用 `DSH_HOME`，未设置或为空白时使用 `~/.dsh`；显式 `dshHome` 配置可覆盖它。模型凭据通过原生 profile 或 `HarnessConfig.environment` 提供。
 
 ```sh
 ./gradlew build
@@ -66,12 +98,17 @@ repositories {
 dependencies { implementation("com.elonzh:dshjk:0.1.0-SNAPSHOT") }
 ```
 
-只检查启动与 Session 目录，无模型请求的示例：
+不传参数时只检查运行时和 Session 目录；传入提示词后持续输出文本和事件：
 
 ```sh
-./gradlew :examples:java:run --args='/path/to/dsh/lib/bin.js /path/to/isolated-home'
-./gradlew :examples:kotlin:run --args='/path/to/dsh/lib/bin.js /path/to/isolated-home'
+./gradlew :examples:java:run
+./gradlew :examples:kotlin:run
+# 运行模型并观察输出（需要已配置模型凭据）
+./gradlew -q :examples:java:run --args='"Explain this project."'
+./gradlew -q :examples:kotlin:run --args='"Explain this project."'
 ```
+
+完整示例将 assistant/命令文本写入 stdout，事件与状态写入 stderr；结束前排空已收到的事件，避免遗漏最后一段输出。原生 SDK 的文本按模型步骤到达，具体语义见 [事件订阅与输出粒度](docs/sdk.md#事件订阅)。
 
 架构、完整操作对照、状态归属、配置、事件和扩展方式集中维护在 [SDK 使用与架构](docs/sdk.md)。兼容基线为 DeepSeek Harness `0.2.2-rc.1`；该上游处于 developer preview，升级时应重新运行原生测试。
 

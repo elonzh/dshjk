@@ -43,9 +43,10 @@ class NativeRuntimeTest {
         val config = nativeConfig("sdk-minimal", server.address.port)
         try {
             val h = DeepSeekHarness(config)
+            val session = h.session()
             try {
                 assertEquals("deepseek-harness-sdk-runtime", h.start().serverInfo.name)
-                val session = h.session("native-persisted")
+                assertTrue(session.id.matches(Regex("session-[0-9a-f]{32}")))
                 assertEquals(root.toRealPath(), Path.of(session.getWorkingDirectory()).toRealPath())
                 val subdir = Files.createDirectory(root.resolve("subdir"))
                 assertEquals(subdir.toRealPath(), Path.of(session.setWorkingDirectory("subdir")).toRealPath())
@@ -57,9 +58,9 @@ class NativeRuntimeTest {
                 assertEquals(1234, requests.first()["max_tokens"]?.jsonPrimitive?.int)
             } finally { h.closeAsync() }
             DeepSeekHarness(config).use { restored ->
-                val session = restored.resumeSession("native-persisted")
-                assertEquals(root.resolve("subdir").toRealPath(), Path.of(session.getWorkingDirectory()).toRealPath())
-                assertEquals("native hello", session.run("Continue").finalResponse)
+                val restoredSession = restored.resumeSession(session.id)
+                assertEquals(root.resolve("subdir").toRealPath(), Path.of(restoredSession.getWorkingDirectory()).toRealPath())
+                assertEquals("native hello", restoredSession.run("Continue").finalResponse)
                 assertTrue(requests.last()["messages"]!!.jsonArray.size > requests.first()["messages"]!!.jsonArray.size)
             }
         } finally { server.stop(0) }
@@ -124,6 +125,41 @@ class NativeRuntimeTest {
                 assertTrue(r.events.any { it.type == SessionEventType.Builtin.TOOL_RESULT })
             }
         } finally { server.stop(0) }
+    }
+    @Test fun `native home discovery honors environment default and explicit override`(): Unit = runBlocking {
+        data class HomeCase(val name: String, val environmentHome: String?, val explicit: Boolean)
+        val cases = listOf(HomeCase("default", null, false), HomeCase("blank", "  ", false),
+            HomeCase("environment", "environment-home", false), HomeCase("explicit", "environment-home", true))
+        for (case in cases) {
+            val workspace = Files.createDirectories(root.resolve(case.name))
+            val userHome = Files.createDirectories(workspace.resolve("user"))
+            val environmentHome = workspace.resolve("environment-home")
+            val explicitHome = workspace.resolve("explicit-home")
+            val env = System.getenv().toMutableMap().apply {
+                remove("DSH_HOME")
+                put("HOME", userHome.toString()); put("USERPROFILE", userHome.toString())
+                put("DSH_AGENTS_HOME", workspace.resolve("agents").toString())
+                put("DEEPSEEK_API_KEY", "local-fixture"); put("DSH_TELEMETRY_DISABLED", "1")
+                case.environmentHome?.let { put("DSH_HOME", if (it.isBlank()) it else environmentHome.toString()) }
+            }
+            val config = HarnessConfig(
+                dshHome = if (case.explicit) explicitHome else null,
+                cwd = workspace, runtime = RuntimeCommand.node(Path.of(System.getenv("DSHJK_TEST_CLI"))),
+                profile = "sdk-minimal", environment = env, inheritEnvironment = false,
+            )
+            val expectedHome = when {
+                case.explicit -> explicitHome
+                !case.environmentHome.isNullOrBlank() -> environmentHome
+                else -> userHome.resolve(".dsh")
+            }
+            DeepSeekHarness(config).use { h ->
+                val session = h.session()
+                assertTrue(session.id.matches(Regex("session-[0-9a-f]{32}")))
+                assertEquals(workspace.toRealPath(), Path.of(session.getWorkingDirectory()).toRealPath())
+            }
+            assertTrue(Files.isDirectory(expectedHome.resolve("profiles/sdk-minimal")), case.name)
+            if (case.explicit) assertFalse(Files.exists(environmentHome))
+        }
     }
     private fun nativeConfig(profile: String, port: Int, question: UserQuestionHandler? = null) = HarnessConfig(
         dshHome = root.resolve("home-$profile"), cwd = root,

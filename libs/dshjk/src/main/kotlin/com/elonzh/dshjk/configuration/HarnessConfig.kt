@@ -6,7 +6,8 @@ import java.time.Duration
 
 /** Immutable launch inputs. The runtime and all durable resources remain owned by dsh. */
 class HarnessConfig @JvmOverloads constructor(
-    val dshHome: Path,
+    /** Omit to let dsh resolve DSH_HOME, then its native home-directory default. */
+    val dshHome: Path? = null,
     val cwd: Path = Path.of("").toAbsolutePath(),
     val runtime: RuntimeCommand = RuntimeCommand.executable("dsh"),
     val profile: String = "sdk",
@@ -39,7 +40,7 @@ class HarnessConfig @JvmOverloads constructor(
             require(!it.isNegative && it.toMillis() > 0) { "Timeouts must be at least one millisecond" }
         }
     }
-    class Builder internal constructor(private val home: Path) {
+    class Builder internal constructor(private var home: Path?) {
         private var cwd = Path.of("").toAbsolutePath()
         private var runtime = RuntimeCommand.executable("dsh")
         private var profile = "sdk"
@@ -59,6 +60,7 @@ class HarnessConfig @JvmOverloads constructor(
         private var capacity = 8192
         private var approval: ApprovalHandler? = null
         private var question: UserQuestionHandler? = null
+        fun dshHome(value: Path) = apply { home = value }
         fun cwd(value: Path) = apply { cwd = value }
         fun runtime(value: RuntimeCommand) = apply { runtime = value }
         fun profile(value: String) = apply { profile = value }
@@ -82,7 +84,7 @@ class HarnessConfig @JvmOverloads constructor(
             inheritEnvironment, provider, model, effort, tokens, initializeTimeout, requestTimeout,
             shutdownTimeout, eofGrace, terminateGrace, capacity, approval, question)
     }
-    companion object { @JvmStatic fun builder(dshHome: Path) = Builder(dshHome) }
+    companion object { @JvmStatic @JvmOverloads fun builder(dshHome: Path? = null) = Builder(dshHome) }
 }
 
 /** An executable, or Node plus an explicit CLI module. No shell command interpretation. */

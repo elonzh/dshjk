@@ -48,7 +48,7 @@ internal class RuntimeConnection(private val config: HarnessConfig) {
         val builder = ProcessBuilder(argv).directory(config.processCwd.toAbsolutePath().normalize().toFile())
         if (!config.inheritEnvironment) builder.environment().clear()
         builder.environment().putAll(config.environment)
-        builder.environment()["DSH_HOME"] = config.dshHome.toAbsolutePath().normalize().toString()
+        config.dshHome?.let { builder.environment()["DSH_HOME"] = it.toAbsolutePath().normalize().toString() }
         val child = try { builder.start() } catch (error: Exception) {
             val e = diagnostic("Cannot start ${config.runtime.executable}", error)
             fail(e); throw e
