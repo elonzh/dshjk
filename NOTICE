@@ -1,0 +1,8 @@
+dshjk
+Copyright 2026 elonzh
+
+Licensed under the Apache License, Version 2.0.
+
+dshjk implements the native DeepSeek Harness SDK protocol.
+DeepSeek Harness: https://github.com/deepseek-ai/deepseek-harness (MIT).
+The Gradle Wrapper is distributed by the Gradle project under Apache License 2.0.
