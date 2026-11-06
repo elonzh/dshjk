@@ -27,36 +27,48 @@ sealed interface QueryResult {
 }
 
 /** Native content is extensible. Known blocks have typed constructors; extension blocks retain exact JSON. */
+@Serializable(with = ContentBlockSerializer::class)
 sealed interface ContentBlock {
+    val type: ContentType
     fun toJson(): JsonObject
     data class Text(val text: String) : ContentBlock {
-        override fun toJson() = buildJsonObject { put("type", "text"); put("text", text) }
+        override val type get() = ContentType.Builtin.TEXT
+        override fun toJson() = buildJsonObject { put("type", type.wireName); put("text", text) }
     }
     data class Reasoning(val text: String) : ContentBlock {
-        override fun toJson() = buildJsonObject { put("type", "reasoning"); put("text", text) }
+        override val type get() = ContentType.Builtin.REASONING
+        override fun toJson() = buildJsonObject { put("type", type.wireName); put("text", text) }
     }
-    data class EncodedImage @JvmOverloads constructor(val data: String, val mimeType: String, val name: String? = null) : ContentBlock {
-        init { require(mimeType in setOf("image/png", "image/jpeg", "image/webp", "image/gif")) }
+    data class EncodedImage @JvmOverloads constructor(val data: String, val mimeType: ImageMediaType, val name: String? = null) : ContentBlock {
+        override val type get() = ContentType.Builtin.IMAGE
         override fun toJson() = buildJsonObject {
-            put("type", "image"); put("data", data); put("mimeType", mimeType); name?.let { put("name", it) }
+            put("type", type.wireName); put("data", data); put("mimeType", mimeType.wireName); name?.let { put("name", it) }
         }
     }
-    data class Image @JvmOverloads constructor(val attachment: JsonObject, val offloaded: Boolean = false) : ContentBlock {
-        override fun toJson() = buildJsonObject { put("type", "image"); put("attachment", attachment); if (offloaded) put("offloaded", true) }
+    data class Image @JvmOverloads constructor(val attachment: ImageAttachment, val offloaded: Boolean = false) : ContentBlock {
+        override val type get() = ContentType.Builtin.IMAGE
+        override fun toJson() = buildJsonObject { put("type", type.wireName); put("attachment", HarnessProtocol.json.encodeToJsonElement(attachment)); if (offloaded) put("offloaded", true) }
     }
-    data class File(val attachment: JsonObject) : ContentBlock {
-        override fun toJson() = buildJsonObject { put("type", "file"); put("attachment", attachment) }
+    data class File(val attachment: FileAttachment) : ContentBlock {
+        override val type get() = ContentType.Builtin.FILE
+        override fun toJson() = buildJsonObject { put("type", type.wireName); put("attachment", HarnessProtocol.json.encodeToJsonElement(attachment)) }
     }
     data class ToolCall(val id: String, val name: String, val arguments: String) : ContentBlock {
-        override fun toJson() = buildJsonObject { put("type", "tool-call"); put("id", id); put("name", name); put("arguments", arguments) }
+        override val type get() = ContentType.Builtin.TOOL_CALL
+        override fun toJson() = buildJsonObject { put("type", type.wireName); put("id", id); put("name", name); put("arguments", arguments) }
     }
     data class ToolAddition(val toolName: String) : ContentBlock {
-        override fun toJson() = buildJsonObject { put("type", "tool-addition"); put("toolName", toolName) }
+        override val type get() = ContentType.Builtin.TOOL_ADDITION
+        override fun toJson() = buildJsonObject { put("type", type.wireName); put("toolName", toolName) }
     }
     data class ToolRemoval(val toolName: String) : ContentBlock {
-        override fun toJson() = buildJsonObject { put("type", "tool-removal"); put("toolName", toolName) }
+        override val type get() = ContentType.Builtin.TOOL_REMOVAL
+        override fun toJson() = buildJsonObject { put("type", type.wireName); put("toolName", toolName) }
     }
-    data class Extension(val value: JsonObject) : ContentBlock { override fun toJson() = value }
+    data class Extension(val value: JsonObject) : ContentBlock {
+        override val type: ContentType.Extension = ContentType.Extension(value.string("type"))
+        override fun toJson() = value
+    }
 }
 
 @Serializable data class ApprovalRequest @JvmOverloads constructor(
@@ -71,7 +83,7 @@ sealed interface ContentBlock {
 @Serializable data class UserQuestionRequest(val requestId: String, val sessionId: String, val questions: List<UserQuestion>)
 @Serializable data class UserQuestion @JvmOverloads constructor(
     val id: String, val question: String, val detail: String? = null, val header: String? = null,
-    val options: List<QuestionOption>? = null, val multiSelect: Boolean? = null, val intent: JsonObject? = null,
+    val options: List<QuestionOption>? = null, val multiSelect: Boolean? = null, val intent: QuestionIntent? = null,
 )
 @Serializable data class QuestionOption @JvmOverloads constructor(val label: String, val description: String? = null)
 @Serializable data class AnswerItem @JvmOverloads constructor(val id: String, val selected: List<String>, val custom: String? = null)
@@ -88,3 +100,11 @@ class CancellationToken internal constructor() {
 fun interface ApprovalHandler { fun handle(request: ApprovalRequest, cancellation: CancellationToken): ApprovalResult }
 fun interface UserQuestionHandler { fun handle(request: UserQuestionRequest, cancellation: CancellationToken): UserQuestionResult }
 fun interface NotificationObserver { fun onNotification(notification: HarnessNotification) }
+
+object ContentBlockSerializer : kotlinx.serialization.KSerializer<ContentBlock> {
+    override val descriptor = JsonObject.serializer().descriptor
+    override fun deserialize(decoder: kotlinx.serialization.encoding.Decoder): ContentBlock =
+        HarnessProtocol.content((decoder as JsonDecoder).decodeJsonElement().objectValue())
+    override fun serialize(encoder: kotlinx.serialization.encoding.Encoder, value: ContentBlock) =
+        (encoder as JsonEncoder).encodeJsonElement(value.toJson())
+}

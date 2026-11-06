@@ -49,20 +49,20 @@ private class RunActivity(private val id: String, private val receipt: QueryResu
         val event = (n as? HarnessNotification.Event)?.takeIf { it.sessionId == id }?.event
         if (!received) {
             received = when(receipt) {
-                is QueryResult.Prompt -> event?.inboxInsertedIds?.contains(receipt.messageId) == true
-                is QueryResult.Command -> event?.commandRun?.commandId == receipt.execution.commandId
+                is QueryResult.Prompt -> (event?.data as? SessionEventData.InboxSpliced)?.inserted?.any { it.id == receipt.messageId } == true
+                is QueryResult.Command -> (event?.data as? SessionEventData.CommandRun)?.commandId == receipt.execution.commandId
             }
             if (!received) return false
         }
-        if (receipt is QueryResult.Command && event?.commandDone?.commandId == receipt.execution.commandId) commandDone = true
+        if (receipt is QueryResult.Command && (event?.data as? SessionEventData.CommandDone)?.commandId == receipt.execution.commandId) commandDone = true
         if (event != null) events.add(event)
         notifications.add(n)
         observer?.onNotification(n)
         return true
     }
     fun result(completed: HarnessNotification.QueryCompleted? = null): RunResult = RunResult(id,
-        completed?.finalResponse ?: events.lastOrNull { it.type == "assistant/message" }?.assistantMessage?.content
+        completed?.finalResponse ?: events.map { it.data }.filterIsInstance<SessionEventData.AssistantMessage>().lastOrNull()?.message?.content
             ?.filterIsInstance<ContentBlock.Text>()?.joinToString("") { it.text }.orEmpty(),
-        completed?.finishReason ?: events.lastOrNull { it.type == "turn/end" }?.turnEnd?.kind,
+        completed?.finishReason ?: events.map { it.data }.filterIsInstance<SessionEventData.TurnEnded>().lastOrNull()?.reason?.kind,
         events.toList(), notifications.toList())
 }

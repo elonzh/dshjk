@@ -16,27 +16,30 @@ class HarnessClient(val config: HarnessConfig) : AutoCloseable {
     fun start() = connection.start()
     @JvmOverloads fun subscribe(sessionTreeRoot: String? = null): NotificationSubscription = connection.subscribe(sessionTreeRoot)
     @JvmSynthetic suspend fun initialize(params: InitializeParams): InitializeResult {
-        val value = request("initialize", HarnessProtocol.json.encodeToJsonElement(params).jsonObject, config.initializeTimeout)
+        val value = request(SdkRequestMethod.INITIALIZE, HarnessProtocol.json.encodeToJsonElement(params).jsonObject, config.initializeTimeout)
         val result = boundary("initialize result") { HarnessProtocol.json.decodeFromJsonElement<InitializeResult>(value) }
         if (result.serverInfo.name != "deepseek-harness-sdk-runtime" || result.serverInfo.version.isBlank())
             throw ProtocolException("Unexpected SDK server identity: ${result.serverInfo}")
         return result
     }
     @JvmSynthetic suspend fun prompt(sessionId: String, blocks: List<ContentBlock>): PromptReceipt =
-        PromptReceipt(request("session/prompt", input(sessionId, blocks)).objectValue().string("messageId"))
+        PromptReceipt(request(SdkRequestMethod.SESSION_PROMPT, input(sessionId, blocks)).objectValue().string("messageId"))
     @JvmSynthetic suspend fun query(sessionId: String, blocks: List<ContentBlock>): QueryResult =
-        HarnessProtocol.query(request("session/query", input(sessionId, blocks)))
-    @JvmSynthetic suspend fun resumeSession(sessionId: String) { request("session/resume", session(sessionId)).objectValue() }
-    @JvmSynthetic suspend fun waitForSession(sessionId: String) { request("session/wait", session(sessionId)).objectValue() }
+        HarnessProtocol.query(request(SdkRequestMethod.SESSION_QUERY, input(sessionId, blocks)))
+    @JvmSynthetic suspend fun resumeSession(sessionId: String) { request(SdkRequestMethod.SESSION_RESUME, session(sessionId)).objectValue() }
+    @JvmSynthetic suspend fun waitForSession(sessionId: String) { request(SdkRequestMethod.SESSION_WAIT, session(sessionId)).objectValue() }
     @JvmSynthetic suspend fun getWorkingDirectory(sessionId: String): String =
-        request("session/working-directory/get", session(sessionId)).objectValue().string("cwd")
+        request(SdkRequestMethod.SESSION_WORKING_DIRECTORY_GET, session(sessionId)).objectValue().string("cwd")
     @JvmSynthetic suspend fun setWorkingDirectory(sessionId: String, path: String): String =
-        request("session/working-directory/set", buildJsonObject { put("sessionId", sessionId); put("path", path) }).objectValue().string("cwd")
+        request(SdkRequestMethod.SESSION_WORKING_DIRECTORY_SET, buildJsonObject { put("sessionId", sessionId); put("path", path) }).objectValue().string("cwd")
     /** Explicit low-level protocol shutdown. close() additionally reaps the process. */
-    @JvmSynthetic suspend fun shutdown() { request("shutdown").objectValue() }
+    @JvmSynthetic suspend fun shutdown() { request(SdkRequestMethod.SHUTDOWN).objectValue() }
     /** Escape hatch for plugin-added RPC methods; errors preserve wire code and data. */
     @JvmSynthetic suspend fun request(method: String, params: JsonObject = JsonObject(emptyMap()), timeout: java.time.Duration? = config.requestTimeout): JsonElement =
         connection.request(method, params, timeout)
+    @JvmSynthetic suspend fun request(method: SdkRequestMethod, params: JsonObject = JsonObject(emptyMap()), timeout: java.time.Duration? = config.requestTimeout): JsonElement =
+        request(method.wireName, params, timeout)
+    @JvmName("request") @JvmOverloads fun requestBlocking(method: SdkRequestMethod, params: JsonObject = JsonObject(emptyMap())): JsonElement = runBlocking { request(method, params) }
     @JvmSynthetic suspend fun closeAsync() = connection.close()
     override fun close() = runBlocking { closeAsync() }
     @JvmName("initialize") fun initializeBlocking(params: InitializeParams): InitializeResult = runBlocking { initialize(params) }

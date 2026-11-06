@@ -34,7 +34,7 @@ flowchart LR
 
 低层请求前须初始化。高层 `DeepSeekHarness.start()` 在首次调用时自动完成初始化，并发调用共享一次握手；失败时关闭进程并将实例置为终态，修正配置后创建新实例。关闭可以打断仍在等待的握手。库不会自动重试已发出的输入。
 
-`HarnessClient.request` 可调用 profile 新增的方法，使用 `JsonObject` / `JsonElement` 保留扩展载荷。`RpcException` 保留远端 `code`、message、data；`ProtocolException` 表示收到的已知字段不符合协议；`RequestTimeoutException` 表示本地等待超时；`TransportClosedException` 带 profile、进程状态及最多 64 KiB stderr 尾部。
+`HarnessClient.request(SdkRequestMethod, ...)` 提供内置方法名的类型化入口；字符串重载可调用 profile 新增的方法，使用 `JsonObject` / `JsonElement` 保留扩展载荷。`RpcException` 保留远端 `code`、message、data；`ProtocolException` 表示收到的已知字段不符合协议；`RequestTimeoutException` 表示本地等待超时；`TransportClosedException` 带 profile、进程状态及最多 64 KiB stderr 尾部。
 
 ## 输入、回执与完成
 
@@ -43,12 +43,12 @@ flowchart LR
 ```kotlin
 val input = listOf(
     ContentBlock.Text("分析这张图"),
-    ContentBlock.EncodedImage(base64, "image/png", "screenshot.png"),
+    ContentBlock.EncodedImage(base64, ImageMediaType.IMAGE_PNG, "screenshot.png"),
 )
 val result = session.run(input)
 ```
 
-普通输入的 `messageId` 只是持久化入队回执。`run` 在发请求前订阅，忽略该 message 的 `agent/inbox/spliced` 之前的通知，之后持续收到根 Session 与已知后代通知，直到根 Agent `idle`。结果中 `events` 只含根 Session，子 Agent 的文本不会覆盖根回复。`finalResponse` 是最后一条根 assistant message 中 text 的拼接；`finishReason` 来自最后一条 `turn/end.reason.kind`。
+普通输入的 `messageId` 只是持久化入队回执。`run` 在发请求前订阅，忽略该 message 的 `agent/inbox/spliced` 之前的通知，之后持续收到根 Session 与已知后代通知，直到根 Agent `idle`。结果中 `events` 只含根 Session，子 Agent 的文本不会覆盖根回复。`finalResponse` 是最后一条根 assistant message 中 text 的拼接；`finishReason` 使用 `FinishReason` 表达最后一条 `turn/end.reason.kind`，例如 `FinishReason.Builtin.COMPLETED`。
 
 原生命令按 `commandId` 关联 `command/run`、`command/done` 与 `session.query.completed`。`run` 等待命令活动结束而非单独等待 idle，因而适用于无模型活动的 `/permission`、`/compact`，以及可启动后续活动的 `/plan`、`/goal`。缺失配对生命周期事件会抛协议错误；原生命令拒绝通过结果返回。具体命令是否可用由 profile 决定。
 
@@ -56,9 +56,26 @@ val result = session.run(input)
 
 ## 事件订阅
 
-六个已知 SDK 通知都有独立类型：`Event`、`Status`、`QueryCompleted`、`SubagentStarted`、`SubagentFinished`、`QuestionCancelled`。新增通知使用 `Extension`，所有通知保留原始 params。
+六个已知 SDK 通知都有独立类型：`Event`、`Status`、`QueryCompleted`、`SubagentStarted`、`SubagentFinished`、`QuestionCancelled`。`method` 使用 `NotificationMethod`；内置方法是 `NotificationMethod.Builtin` 枚举，新增通知使用 `Extension`，所有通知保留原始 params。
 
-`SessionEvent` 保留完整原生 envelope（含 seq/time/surface metadata）和 data。assistant message、turn end、inbox receipt、command run/done 有类型化访问器。原生 Session 日志是由 Cordis 插件扩展的事件集合，不是封闭 SDK 枚举：其余日志载荷以 JSON 保留，可通过 `decodeData(serializer)` 使用插件自有类型读取。SDK 不重建或迁移原生会话日志。文件/图片 attachment 元数据与问题 intent 同样保留上游 JSON，而非提供不完整的复制模型。
+`SessionEvent.type` 使用 `SessionEventType`，当前基线的 63 个内置名称集中定义在 `SessionEventType.Builtin`；`data` 使用 sealed 接口 `SessionEventData`，每个内置事件对应具体数据类。turn/step、消息与流、工具调用、命令、审批、compaction、goal、todo、job、team 等都可直接读取类型化字段。`seq`、`time` 是经过校验的整数；完整原生 envelope（含 surface metadata 和未知字段）仍保留在 `raw` 中。
+
+固定状态使用枚举，例如 `AgentStatus`、`RunStatus`、`CommandStatus`、`TodoStatus`、`JobStatus`、`GoalPhase`、`ImageMediaType`。`TurnEndReason` 和 `QuestionIntent` 使用带载荷的 sealed 类型，例如 `TurnEndReason.Aborted` 携带 `AbortReason`，`TurnEndReason.Error` 携带 `LlmFailure`，`QuestionIntent.PlanReview` 携带批准选项与调用标识。图片和文件引用分别使用 `ImageAttachment`、`FileAttachment`。
+
+原生允许扩展的事件名称、通知方法、结束原因与内容块类型采用“内置枚举 + Extension”的开放类型。未知值保留原始名称和 JSON；已知类型缺字段或状态值非法时抛 `ProtocolException`，不会降级成扩展类型。可用 `.wireName` 获取精确协议拼写。工具参数、JSON Schema、provider replay state 和插件自有消息来源等原本开放的元数据继续使用 JSON。
+
+Kotlin 可直接按载荷类型分支：
+
+```kotlin
+when (val data = event.data) {
+    is SessionEventData.ToolCalled -> println(data.name)
+    is SessionEventData.TurnEnded -> println(data.reason.kind.wireName)
+    is SessionEventData.TodosWritten -> data.todos.forEach { println(it.status) }
+    else -> Unit
+}
+```
+
+Java 17 可用 `event.getData() instanceof SessionEventData.ToolCalled call`，然后读取 `call.getName()`；固定状态直接与枚举值比较。插件事件可通过 `SessionEventData.Extension` 读取原始值，或用 `decodeData(serializer)` 解码成插件自有类型。SDK 不重建或迁移原生会话日志。
 
 订阅创建时即注册，每个订阅有独立缓冲，默认 8192 条；溢出仅使该订阅抛 `SlowConsumerException`，不堵塞协议读取。进程结束时先允许消费已收到的通知，再抛终态错误；显式关闭订阅丢弃队列。`next(Duration)` 的超时只影响一次等待，订阅仍可继续消费。
 

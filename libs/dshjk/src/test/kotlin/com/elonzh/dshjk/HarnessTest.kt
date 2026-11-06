@@ -30,9 +30,9 @@ class HarnessTest {
         DeepSeekHarness(config()).use { h ->
             val r = h.run("你好 😀", "one")
             assertEquals("你好 😀", r.finalResponse)
-            assertEquals("completed", r.finishReason)
+            assertEquals(FinishReason.Builtin.COMPLETED, r.finishReason)
             assertTrue(r.notifications.any { it is HarnessNotification.SubagentStarted })
-            assertEquals(1, r.events.count { it.type == "assistant/message" })
+            assertEquals(1, r.events.count { it.type == SessionEventType.Builtin.ASSISTANT_MESSAGE })
             assertEquals("command complete", h.run("/compact", "one").finalResponse)
             assertEquals("command complete", h.run("/early", "one").finalResponse)
             assertFailsWith<ProtocolException> { h.run("/missing", "one") }

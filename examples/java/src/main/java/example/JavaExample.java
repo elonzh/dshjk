@@ -16,7 +16,7 @@ public final class JavaExample {
             var session = harness.session();
             System.out.println(session.getWorkingDirectory());
             if (args.length > 2) {
-                var result = session.run(args[2], notification -> System.out.println(notification.getMethod()));
+                var result = session.run(args[2], notification -> System.out.println(notification.getMethod().getWireName()));
                 System.out.println(result.getFinalResponse());
             }
         }

@@ -133,16 +133,16 @@ internal class RuntimeConnection(private val config: HarnessConfig) {
     }
     private fun handleRequest(id: JsonElement, method: String, params: JsonObject) {
         val token = CancellationToken()
-        val questionId = if (method == "user-question/ask") params.optionalString("requestId") else null
+        val questionId = if (method == SdkHostMethod.USER_QUESTION_ASK.wireName) params.optionalString("requestId") else null
         val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
                 val result: JsonElement = when {
-                    method == "approval/request" && config.approvalHandler != null -> {
+                    method == SdkHostMethod.APPROVAL_REQUEST.wireName && config.approvalHandler != null -> {
                         val request = boundary(method) { HarnessProtocol.json.decodeFromJsonElement<ApprovalRequest>(params) }
                         val answer = runInterruptible { config.approvalHandler.handle(request, token) }
                         HarnessProtocol.json.encodeToJsonElement(answer)
                     }
-                    method == "user-question/ask" && config.userQuestionHandler != null -> {
+                    method == SdkHostMethod.USER_QUESTION_ASK.wireName && config.userQuestionHandler != null -> {
                         val request = boundary(method) { HarnessProtocol.json.decodeFromJsonElement<UserQuestionRequest>(params) }
                         require(request.questions.isNotEmpty() && request.requestId.isNotEmpty())
                         when (val answer = runInterruptible { config.userQuestionHandler.handle(request, token) }) {
@@ -207,7 +207,7 @@ internal class RuntimeConnection(private val config: HarnessConfig) {
             callbacks.values.forEach { it.token.cancel(); it.job.cancel() }
             val child = process
             if (child != null) {
-                runCatching { request("shutdown", timeout = config.shutdownTimeout, allowClosing = true) }
+                runCatching { request(SdkRequestMethod.SHUTDOWN.wireName, timeout = config.shutdownTimeout, allowClosing = true) }
                 runCatching { child.outputStream.close() }
                 if (!child.waitFor(config.eofGrace.toMillis(), TimeUnit.MILLISECONDS)) {
                     child.destroy()

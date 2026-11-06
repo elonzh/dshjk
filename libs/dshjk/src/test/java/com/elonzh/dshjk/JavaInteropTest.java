@@ -43,4 +43,16 @@ public class JavaInteropTest {
             assertEquals("low-level", harness.getClient().prompt("raw", HarnessProtocol.text("prompt")).getMessageId());
         }
     }
+    @Test void nativeEventDataAndStatesAreUsableFromJava17() {
+        var raw = HarnessProtocol.json.parseToJsonElement(
+            "{\"type\":\"turn/end\",\"seq\":1,\"time\":42,\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}");
+        var event = HarnessProtocol.event((kotlinx.serialization.json.JsonObject) raw);
+        assertEquals(SessionEventType.Builtin.TURN_END, event.getType());
+        assertTrue(event.getData() instanceof SessionEventData.TurnEnded);
+        var ended = (SessionEventData.TurnEnded) event.getData();
+        assertEquals(FinishReason.Builtin.COMPLETED, ended.getReason().getKind());
+        assertEquals("completed", ended.getReason().getKind().getWireName());
+        assertEquals(AgentStatus.RUNNING, AgentStatus.valueOf("RUNNING"));
+        assertEquals("session/query", SdkRequestMethod.SESSION_QUERY.getWireName());
+    }
 }

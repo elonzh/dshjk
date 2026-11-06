@@ -6,8 +6,8 @@ let next=0;
 const waiting = new Map();
 const request = (id,method,params) => new Promise(resolve => { waiting.set(id,resolve); send({id,method,params}); });
 function finish(id,sessionId,text) {
- event(sessionId,'assistant/message',{message:{id:'a',content:[{type:'text',text}]}});
- event(sessionId,'turn/end',{reason:{kind:'completed'}});
+ event(sessionId,'assistant/message',{turn:1,step:1,stream:[],message:{id:'a',role:'assistant',source:{kind:'model'},content:[{type:'text',text}]}});
+ event(sessionId,'turn/end',{turn:1,reason:{kind:'completed'}});
  note('session.status',{sessionId,status:'idle'});
 }
 readline.createInterface({input:process.stdin}).on('line',async line => {
@@ -41,10 +41,10 @@ readline.createInterface({input:process.stdin}).on('line',async line => {
   }
   const messageId='msg'+(++next);
   note('session.status',{sessionId,status:'idle'}); // pre-receipt must not end run
-  event(sessionId,'agent/inbox/spliced',{inserted:[{id:messageId}]});
+  event(sessionId,'agent/inbox/spliced',{target:'next-turn',start:0,inserted:[{id:messageId,role:'user',source:{kind:'user'},content:[{type:'text',text}]}]});
   result({kind:'prompt',messageId});
   note('subagent.started',{parentSessionId:sessionId,childSessionId:sessionId+'-child'});
-  event(sessionId+'-child','assistant/message',{message:{id:'child',content:[{type:'text',text:'child output'}]}});
+  event(sessionId+'-child','assistant/message',{turn:1,step:1,stream:[],message:{id:'child',role:'assistant',source:{kind:'model'},content:[{type:'text',text:'child output'}]}});
   if(text==='approval') {
    const answer=await request(701,'approval/request',{sessionId,toolName:'bash',reason:'test'});
    return finish(m.id,sessionId,answer.outcome);

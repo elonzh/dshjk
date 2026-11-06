@@ -50,8 +50,8 @@ class NativeRuntimeTest {
                 val subdir = Files.createDirectory(root.resolve("subdir"))
                 assertEquals(subdir.toRealPath(), Path.of(session.setWorkingDirectory("subdir")).toRealPath())
                 val results = listOf(async { session.run("First") }, async { h.session("second").run("Second") }).awaitAll()
-                assertTrue(results.all { it.finalResponse == "native hello" && it.finishReason == "completed" })
-                assertTrue(results.all { it.events.any { e -> e.type == "agent/inbox/spliced" } })
+                assertTrue(results.all { it.finalResponse == "native hello" && it.finishReason == FinishReason.Builtin.COMPLETED })
+                assertTrue(results.all { it.events.any { e -> e.type == SessionEventType.Builtin.AGENT_INBOX_SPLICED } })
                 assertEquals(2, requests.size)
                 assertEquals("deepseek-v4-flash", requests.first()["model"]?.jsonPrimitive?.content)
                 assertEquals(1234, requests.first()["max_tokens"]?.jsonPrimitive?.int)
@@ -78,17 +78,17 @@ class NativeRuntimeTest {
             DeepSeekHarness(nativeConfig("sdk", server.address.port)).use { h ->
                 val s = h.session("full")
                 val command = s.run("/permission danger-full-access")
-                assertTrue(command.events.any { it.commandRun != null })
-                assertTrue(command.events.any { it.commandDone != null })
-                assertEquals("completed", command.finishReason)
-                assertTrue(command.events.any { it.commandDone?.kind == "success" })
+                assertTrue(command.events.any { it.data is SessionEventData.CommandRun })
+                assertTrue(command.events.any { it.data is SessionEventData.CommandDone })
+                assertEquals(FinishReason.Builtin.COMPLETED, command.finishReason)
+                assertTrue(command.events.any { (it.data as? SessionEventData.CommandDone)?.kind == CommandStatus.SUCCESS })
                 assertEquals(0, requests)
                 val r = s.run("One turn")
                 assertEquals("bounded", r.finalResponse)
-                assertEquals("max-tokens", r.finishReason)
+                assertEquals(FinishReason.Builtin.MAX_TOKENS, r.finishReason)
                 val compact = s.run("/compact")
-                assertTrue(compact.events.any { it.commandDone?.kind == "success" }, compact.toString())
-                assertEquals("completed", compact.finishReason)
+                assertTrue(compact.events.any { (it.data as? SessionEventData.CommandDone)?.kind == CommandStatus.SUCCESS }, compact.toString())
+                assertEquals(FinishReason.Builtin.COMPLETED, compact.finishReason)
             }
         } finally { server.stop(0) }
     }
@@ -121,7 +121,7 @@ class NativeRuntimeTest {
                 assertEquals("format", questions.single().questions.single().id)
                 assertEquals(2, requests.size)
                 assertTrue(requests.last()["messages"].toString().contains("CSV"))
-                assertTrue(r.events.any { it.type == "tool/result" })
+                assertTrue(r.events.any { it.type == SessionEventType.Builtin.TOOL_RESULT })
             }
         } finally { server.stop(0) }
     }

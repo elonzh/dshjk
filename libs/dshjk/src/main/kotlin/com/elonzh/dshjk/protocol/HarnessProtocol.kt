@@ -5,56 +5,45 @@ import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.*
 
 object HarnessProtocol {
-    @JvmField val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }
+    @JvmField val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false; classDiscriminator = "kind" }
     @JvmStatic fun text(input: String): List<ContentBlock> = listOf(ContentBlock.Text(input))
     @JvmStatic fun content(value: JsonObject): ContentBlock = boundary("content block") {
-        when (value.string("type")) {
-            "text" -> ContentBlock.Text(value.string("text", allowEmpty = true))
-            "reasoning" -> ContentBlock.Reasoning(value.string("text", allowEmpty = true))
-            "image" -> if (value.containsKey("data")) ContentBlock.EncodedImage(value.string("data"), value.string("mimeType"), value.optionalString("name"))
-                else ContentBlock.Image(value.objectAt("attachment"), value["offloaded"] == JsonPrimitive(true))
-            "file" -> ContentBlock.File(value.objectAt("attachment"))
-            "tool-call" -> ContentBlock.ToolCall(value.string("id"), value.string("name"), value.string("arguments", true))
-            "tool-addition" -> ContentBlock.ToolAddition(value.string("toolName"))
-            "tool-removal" -> ContentBlock.ToolRemoval(value.string("toolName"))
-            else -> ContentBlock.Extension(value)
+        when (ContentType.fromWire(value.string("type"))) {
+            ContentType.Builtin.TEXT -> ContentBlock.Text(value.string("text", allowEmpty = true))
+            ContentType.Builtin.REASONING -> ContentBlock.Reasoning(value.string("text", allowEmpty = true))
+            ContentType.Builtin.IMAGE -> if (value.containsKey("data")) ContentBlock.EncodedImage(value.string("data"), json.decodeFromJsonElement(value.required("mimeType")), value.optionalString("name"))
+                else ContentBlock.Image(json.decodeFromJsonElement(value.required("attachment")), value["offloaded"] == JsonPrimitive(true))
+            ContentType.Builtin.FILE -> ContentBlock.File(json.decodeFromJsonElement(value.required("attachment")))
+            ContentType.Builtin.TOOL_CALL -> ContentBlock.ToolCall(value.string("id"), value.string("name"), value.string("arguments", true))
+            ContentType.Builtin.TOOL_ADDITION -> ContentBlock.ToolAddition(value.string("toolName"))
+            ContentType.Builtin.TOOL_REMOVAL -> ContentBlock.ToolRemoval(value.string("toolName"))
+            is ContentType.Extension -> ContentBlock.Extension(value)
         }
     }
     @JvmStatic fun event(value: JsonObject): SessionEvent = boundary("session event") {
-        val e = SessionEvent(value.string("type"), value["data"] ?: throw ProtocolException("Missing event data"), value)
-        // Validate the fields the run collector consumes before exposing them to observers.
-        when (e.type) {
-            "assistant/message" -> e.assistantMessage
-            "turn/end" -> {
-                val end = e.turnEnd!!
-                if (end.kind == "aborted") {
-                    val reason = end.reason.objectAt("reason")
-                    when (reason.string("kind")) {
-                        "user", "parent", "disposed", "legacy" -> Unit
-                        "hook" -> reason.string("reason", true)
-                        else -> throw ProtocolException("Unknown abort reason")
-                    }
-                }
-            }
-            "command/run" -> e.commandRun
-            "command/done" -> e.commandDone
-            "agent/inbox/spliced" -> e.inboxInsertedIds
+        val type = SessionEventType.fromWire(value.string("type"))
+        val rawData = value["data"] ?: throw ProtocolException("Missing event data")
+        val data = when (type) {
+            is SessionEventType.Builtin -> json.decodeFromJsonElement(type.payloadSerializer(), rawData)
+            is SessionEventType.Extension -> SessionEventData.Extension(type, rawData)
         }
-        e
+        SessionEvent(data, value).also {
+            require(it.seq >= 0 && it.seq <= 9007199254740991L) { "Invalid event seq" }
+            require(it.time >= 0 && it.time <= 9007199254740991L) { "Invalid event time" }
+        }
     }
+
     @JvmStatic fun notification(method: String, p: JsonObject): HarnessNotification = boundary(method) {
-        when (method) {
-            "session.event" -> HarnessNotification.Event(p.string("sessionId"), event(p.objectAt("event")), p)
-            "session.status" -> HarnessNotification.Status(p.string("sessionId"), when(p.string("status")) {
-                "idle" -> AgentStatus.IDLE; "running" -> AgentStatus.RUNNING; else -> throw ProtocolException("Invalid agent status")
-            }, p)
-            "session.query.completed" -> HarnessNotification.QueryCompleted(p.string("sessionId"), p.string("commandId"), p.string("finalResponse", true), p.string("finishReason"), p)
-            "subagent.started" -> HarnessNotification.SubagentStarted(p.string("parentSessionId"), p.string("childSessionId"), p)
-            "subagent.finished" -> HarnessNotification.SubagentFinished(p.string("provider"), p.string("agentId"), p.string("parentSessionId"), p.string("childSessionId"),
-                when(p.string("status")) { "ok" -> RunStatus.OK; "error" -> RunStatus.ERROR; else -> throw ProtocolException("Invalid run status") },
-                p["stopReason"] ?: throw ProtocolException("Missing stopReason"), (p["lastAssistantMessage"] as? JsonArray)?.map { content(it.objectValue()) }, p)
-            "user-question.cancelled" -> HarnessNotification.QuestionCancelled(p.string("requestId"), p.string("sessionId"), p)
-            else -> HarnessNotification.Extension(method, p)
+        when (val name = NotificationMethod.fromWire(method)) {
+            NotificationMethod.Builtin.SESSION_EVENT -> HarnessNotification.Event(p.string("sessionId"), event(p.objectAt("event")), p)
+            NotificationMethod.Builtin.SESSION_STATUS -> HarnessNotification.Status(p.string("sessionId"), json.decodeFromJsonElement<AgentStatus>(p.required("status")), p)
+            NotificationMethod.Builtin.SESSION_QUERY_COMPLETED -> HarnessNotification.QueryCompleted(p.string("sessionId"), p.string("commandId"), p.string("finalResponse", true), FinishReason.fromWire(p.string("finishReason")), p)
+            NotificationMethod.Builtin.SUBAGENT_STARTED -> HarnessNotification.SubagentStarted(p.string("parentSessionId"), p.string("childSessionId"), p)
+            NotificationMethod.Builtin.SUBAGENT_FINISHED -> HarnessNotification.SubagentFinished(p.string("provider"), p.string("agentId"), p.string("parentSessionId"), p.string("childSessionId"),
+                json.decodeFromJsonElement<RunStatus>(p.required("status")),
+                SubagentStopReason.fromWire(p.string("stopReason")), (p["lastAssistantMessage"] as? JsonArray)?.map { content(it.objectValue()) }, p)
+            NotificationMethod.Builtin.USER_QUESTION_CANCELLED -> HarnessNotification.QuestionCancelled(p.string("requestId"), p.string("sessionId"), p)
+            is NotificationMethod.Extension -> HarnessNotification.Extension(name.wireName, p)
         }
     }
     internal fun query(value: JsonElement): QueryResult = boundary("session/query result") {
@@ -91,3 +80,5 @@ internal fun JsonObject.string(key: String, allowEmpty: Boolean = false): String
     return p?.takeIf { it.isString }?.content?.takeIf { allowEmpty || it.isNotEmpty() } ?: throw ProtocolException("Invalid string: $key")
 }
 internal fun JsonObject.optionalString(key: String) = if (containsKey(key)) string(key, true) else null
+
+internal fun JsonObject.required(key: String): JsonElement = get(key) ?: throw ProtocolException("Missing field: $key")

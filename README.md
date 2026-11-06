@@ -2,7 +2,7 @@
 
 DeepSeek Harness 的独立 JVM SDK。一个 `com.elonzh:dshjk` 制品，同时支持 Java 17+ 与 Kotlin 2.2.0+，包名前缀 `com.elonzh.dshjk`。当前版本 `0.1.0-SNAPSHOT`，尚未远程发布。
 
-SDK 直接启动原生 `dsh --profile sdk`，通过双向 JSONL JSON-RPC 2.0 通信。支持多 Session、文本/图片、原生命令、持久化恢复、工作目录、事件订阅、审批和用户问题。Kotlin 使用 suspend/Flow；Java 在同一类型上使用阻塞方法和 JDK `Flow.Publisher`。
+SDK 直接启动原生 `dsh --profile sdk`，通过双向 JSONL JSON-RPC 2.0 通信。支持多 Session、文本/图片、原生命令、持久化恢复、工作目录、事件订阅、审批和用户问题；内置事件载荷、状态与结束原因均提供类型化定义。Kotlin 使用 suspend/Flow；Java 在同一类型上使用阻塞方法和 JDK `Flow.Publisher`。
 
 ## Kotlin
 
