@@ -1,4 +1,5 @@
 import readline from 'node:readline';
+import {readFileSync} from 'node:fs';
 const send = x => process.stdout.write(JSON.stringify({jsonrpc:'2.0',...x})+'\n');
 const note = (method,params) => send({method,params});
 const event = (sessionId,type,data) => note('session.event',{sessionId,event:{type,seq:1,time:1,data}});
@@ -23,6 +24,10 @@ readline.createInterface({input:process.stdin}).on('line',async line => {
  case 'session/working-directory/get': return result({cwd:p.sessionId==='nested'?'/nested':process.cwd()});
  case 'session/working-directory/set': return result({cwd:p.path});
  case 'session/resume': case 'session/wait': return result({});
+ case 'launch-config': {
+  const paths = process.argv.flatMap((arg, i) => arg === '--patch' ? [process.argv[i+1]] : []);
+  return result({paths, patches: paths.map(path => JSON.parse(readFileSync(path, 'utf8')))});
+ }
  case 'error': return send({id:m.id,error:{code:42,message:'expected error',data:{detail:'retained'}}});
  case 'hang': return;
  case 'crash': process.exit(7); break;

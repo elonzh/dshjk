@@ -1,6 +1,6 @@
 # dshjk
 
-DeepSeek Harness 的独立 JVM SDK。一个 `com.elonzh:dshjk` 制品，同时支持 Java 17+ 与 Kotlin 2.2.0+，包名前缀 `com.elonzh.dshjk`。当前版本 `0.1.0-SNAPSHOT`，尚未远程发布。
+DeepSeek Harness 的独立 JVM SDK。核心制品 `com.elonzh:dshjk` 同时支持 Java 17+ 与 Kotlin 2.2.0+，包名前缀 `com.elonzh.dshjk`。当前版本 `0.1.0-SNAPSHOT`，尚未远程发布。
 
 SDK 直接启动原生 `dsh --profile sdk`，通过双向 JSONL JSON-RPC 2.0 通信。支持多 Session、文本/图片、原生命令、持久化恢复、工作目录、事件订阅、审批和用户问题；内置事件载荷、状态与结束原因均提供类型化定义。Kotlin 使用 suspend/Flow；Java 在同一类型上使用阻塞方法和 JDK `Flow.Publisher`。
 
@@ -70,6 +70,18 @@ val harness = DeepSeekHarness(HarnessConfig(
 ```
 
 Java 使用 `HarnessConfig.builder().cwd(...).dshHome(...).runtime(...).build()`，各项均可省略。
+
+## Spring Boot 4 与 Spring AI
+
+添加可选 starter 后，可直接注入由 Spring 管理的 `DeepSeekHarness`：
+
+```kotlin
+implementation("com.elonzh:dshjk-spring-boot-starter:0.1.0-SNAPSHOT")
+```
+
+starter 保留原生默认行为，支持数据类 patch、类型化供应商配置、Bean 覆盖、回调注入和容器关闭时的进程回收。未显式配置模型时，可从现有 Spring AI OpenAI / Anthropic ChatModel 提取连接配置。Spring AI 的 `@Tool` / `ToolCallbackProvider` 经官方 MCP Server 接入 Harness；连接配置由 starter 转为原生启动 patch。
+
+[Spring 集成文档](docs/spring.md)包含完整配置与用法；[Spring Boot 示例](examples/spring-boot/src/main/kotlin/example/spring/HarnessApplication.kt)提供工具注册、普通 HTTP 请求和 SSE 事件输出。
 
 ## 构建与使用
 

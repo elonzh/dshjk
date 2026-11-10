@@ -1,5 +1,6 @@
 pluginManagement { repositories { gradlePluginPortal(); mavenCentral() } }
 dependencyResolutionManagement { repositories { mavenCentral() } }
 rootProject.name = "dshjk"
-include(":dshjk", ":examples:java", ":examples:kotlin")
+include(":dshjk", ":dshjk-spring-boot-starter", ":examples:java", ":examples:kotlin", ":examples:spring-boot")
 project(":dshjk").projectDir = file("libs/dshjk")
+project(":dshjk-spring-boot-starter").projectDir = file("libs/dshjk-spring-boot-starter")

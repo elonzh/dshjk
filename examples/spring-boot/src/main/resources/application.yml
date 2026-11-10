@@ -1,0 +1,16 @@
+server:
+  address: 127.0.0.1
+  port: 8080
+spring:
+  ai:
+    mcp:
+      server:
+        name: dshjk-example-tools
+        version: 0.1.0
+        type: SYNC
+        protocol: STREAMABLE
+# dsh uses its native defaults for runtime, home, provider, model and Session IDs.
+dshjk:
+  mcp:
+    application:
+      url: http://127.0.0.1:${server.port}/mcp

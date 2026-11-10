@@ -30,6 +30,7 @@ internal class RuntimeConnection(private val config: HarnessConfig) {
     @Volatile private var closing = false
     @Volatile private var disposed = false
     @Volatile private var process: Process? = null
+    private var patchFiles: RuntimePatchFiles? = null
     private var writer: BufferedWriter? = null
     private var readerThread: Thread? = null
     private var stderrThread: Thread? = null
@@ -43,15 +44,20 @@ internal class RuntimeConnection(private val config: HarnessConfig) {
     fun start() = synchronized(stateLock) {
         checkUsable()
         if (process != null) return@synchronized
-        val argv = listOf(config.runtime.executable) + config.runtime.arguments + listOf("--profile", config.profile) +
-            config.patches.flatMap { listOf("--patch", it.toString()) }
-        val builder = ProcessBuilder(argv).directory(config.processCwd.toAbsolutePath().normalize().toFile())
-        if (!config.inheritEnvironment) builder.environment().clear()
-        builder.environment().putAll(config.environment)
-        config.dshHome?.let { builder.environment()["DSH_HOME"] = it.toAbsolutePath().normalize().toString() }
-        val child = try { builder.start() } catch (error: Exception) {
-            val e = diagnostic("Cannot start ${config.runtime.executable}", error)
-            fail(e); throw e
+        val child = try {
+            val files = RuntimePatchFiles(config).also { patchFiles = it }
+            val argv = listOf(config.runtime.executable) + config.runtime.arguments + listOf("--profile", config.profile) +
+                files.paths.flatMap { listOf("--patch", it.toString()) }
+            val builder = ProcessBuilder(argv).directory(config.processCwd.toAbsolutePath().normalize().toFile())
+            if (!config.inheritEnvironment) builder.environment().clear()
+            builder.environment().putAll(config.environment)
+            config.dshHome?.let { builder.environment()["DSH_HOME"] = it.toAbsolutePath().normalize().toString() }
+            builder.start()
+        } catch (error: Exception) {
+            try { patchFiles?.close() } catch (cleanup: Exception) { error.addSuppressed(cleanup) }
+            val failure = diagnostic("Cannot start ${config.runtime.executable}", error)
+            fail(failure)
+            throw failure
         }
         process = child
         writer = child.outputStream.bufferedWriter(Charsets.UTF_8)
@@ -219,6 +225,7 @@ internal class RuntimeConnection(private val config: HarnessConfig) {
                 child.inputStream.close(); child.errorStream.close()
                 readerThread?.join(500); stderrThread?.join(500)
             }
+            patchFiles?.close()
             disposed = true
             fail(diagnostic("Client closed"))
             parents.clear()

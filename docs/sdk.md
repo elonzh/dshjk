@@ -2,7 +2,7 @@
 
 ## 边界与依赖
 
-`dshjk` 是面向 Java 和 Kotlin 应用的 DeepSeek Harness JVM 客户端。仅发布 `libs/dshjk`；`examples/java` 与 `examples/kotlin` 是独立编译的消费示例。
+`dshjk` 是面向 Java 和 Kotlin 应用的 DeepSeek Harness JVM 客户端。核心制品位于 `libs/dshjk`；可选 `libs/dshjk-spring-boot-starter` 提供框架集成。`examples/java`、`examples/kotlin` 与 `examples/spring-boot` 是独立编译的消费示例。Spring 配置与工具接入集中维护在 [Spring 集成文档](spring.md)。
 
 ```mermaid
 flowchart LR
@@ -127,7 +127,8 @@ Java 使用 builder 的同名方法和相同 SAM 接口。`approval/request` 返
 | --- | --- |
 | `dshHome` | 可选；省略时由原生运行时按 `DSH_HOME` → `~/.dsh` 发现，显式值优先 |
 | `runtime` | PATH 上的 `dsh`；可用 `RuntimeCommand.node(cli, node)` 选择 JS CLI |
-| `profile` / `patches` | `sdk` / 空；按顺序传递绝对 `--patch` 文件 |
+| `profile` | `sdk`，原生运行时组合 |
+| `patches` / `patchFiles` | 空 / 空；内联数据类操作与随后应用的原始 patch 文件 |
 | `cwd` / `processCwd` | JVM 当前目录 / cwd；分别表示 Agent workspace 与子进程目录 |
 | `environment` / `inheritEnvironment` | 空 / true；覆盖继承环境，false 表示完整替换；仅显式设置 `dshHome` 时覆盖子进程的 `DSH_HOME` |
 | `provider` / `model` | `deepseek-official` / `deepseek-v4-flash` |
@@ -137,7 +138,7 @@ Java 使用 builder 的同名方法和相同 SAM 接口。`approval/request` 返
 | `shutdownTimeout` / `eofGrace` / `terminateGrace` | 1 / 6 / 3 秒 |
 | `notificationBufferCapacity` | 8192，每个订阅独立 |
 
-配置通过可省略的 `HarnessConfig()` 或 Java `HarnessConfig.builder()` 创建，集合在边界复制为不可修改值。省略 `dshHome` 时，SDK 保留子进程环境，由运行时解析 home，包括空白环境值回退和 `~` 展开；SDK 不在 JVM 内复制发现算法。启动参数按 argv 传递，不经 shell 解释；`RuntimeCommand.of` 支持显式 launcher 前缀，例如自定义 Node loader。SDK 不修改宿主全局环境。
+配置通过可省略的 `HarnessConfig()` 或 Java `HarnessConfig.builder()` 创建，集合在边界复制为不可修改值，内联 patch 的 JSON 在构造配置时形成快照。省略 `dshHome` 时，SDK 保留子进程环境，由运行时解析 home，包括空白环境值回退和 `~` 展开；SDK 不在 JVM 内复制发现算法。启动参数按 argv 传递，不经 shell 解释；`RuntimeCommand.of` 支持显式 launcher 前缀，例如自定义 Node loader。SDK 不修改宿主全局环境。
 
 Kotlin 用 `closeAsync()`，Java 用 try-with-resources 的 `close()`；两者执行同一关闭实现。关闭先停止宿主回调，然后请求 shutdown、关闭 stdin 等待原生 EOF 清理，再依次 terminate / force terminate，并确认根运行时进程已退出。关闭幂等且终态，不能重新启动。Kotlin 的关闭使用 NonCancellable 以完成资源回收。
 
@@ -145,24 +146,58 @@ Kotlin 用 `closeAsync()`，Java 用 try-with-resources 的 `close()`；两者�
 
 `resumeSession(id)` 必须使用原来的 home；找不到、占用或不兼容的历史由原生报错，不创建替代会话。恢复不等于恢复旧 shell/browser 进程。`get/setWorkingDirectory` 可惰性创建 Session，相对目录由该 Session 当前目录解析，设置不改变原始目录元数据、权限或已有外部进程。
 
-## 工具与插件扩展
+## 数据类 patch 与供应商配置
 
-持久化工具与 MCP 配置归 profile；调用级组合用 `patches`。应用可通过原生 MCP client 接入外部 MCP server。例如调用级 patch：
+`HarnessPatch` 表示一条原生 Cordis 操作：`id + config` 替换已有条目的完整配置，`id + disabled` 切换状态，`insert` 插入 `HarnessPlugin`；带 `id` 的插入以该条目作为目标 group。`name` 是已有条目的名称匹配条件。插件配置使用 JSON 值的 Map，插件扩展仍可定义自己的字段。
 
-```yaml
-- insert:
-    - id: external-mcp
-      name: '@deepseek-ai/dsh-mcp-client'
-      config:
-        serverName: external
-        transport: streamable-http
-        url: http://127.0.0.1:8080/mcp
+供应商有类型化的 `LlmProviderConfig`、`LlmModelConfig` 和 `LlmApi`，不需要手写 YAML 或临时文件：
+
+```kotlin
+val config = HarnessConfig(
+    provider = "gateway",
+    model = "my-model",
+    environment = mapOf("GATEWAY_API_KEY" to requireNotNull(System.getenv("GATEWAY_API_KEY"))),
+    patches = listOf(HarnessPatch.providers(mapOf(
+        "gateway" to LlmProviderConfig(
+            api = LlmApi.OPENAI_COMPLETIONS,
+            baseUrl = URI.create("https://gateway.example/v1"),
+            apiKeyEnv = "GATEWAY_API_KEY",
+            models = listOf(LlmModelConfig("my-model", contextWindow = 131072, maxTokens = 8192)),
+        ),
+    ))),
+)
 ```
 
-使用 `HarnessConfig(..., patches = listOf(Path.of("tools.patch.yml")))` 或 Java builder。模型会看到原生命名的 MCP 工具。鉴权与请求上下文由 MCP 服务和 profile 配置管理。patch 在下次启动时生效。
+容量与模型 ID 按供应商实际值填写。`apiKeyEnv` 引用子进程环境或原生凭据存储中的键；密钥值不放入 provider patch。协议枚举还支持 `OPENAI_RESPONSES` 与 `ANTHROPIC_MESSAGES`。默认 `sdk` 已有 `llm-pi-ai` 条目；`sdk-minimal` 需要 `HarnessPatch.providers(..., insertAdapter = true)` 插入适配器。自定义 profile 需按自身组合选择覆盖或插入。
+
+MCP 使用同一入口，连接由原生客户端管理：
+
+```kotlin
+val patch = HarnessPatch.mcpServers(mapOf(
+    "external" to McpServerConfig(URI.create("http://127.0.0.1:8080/mcp")),
+))
+val config = HarnessConfig(patches = listOf(patch))
+```
+
+其他插件可以直接使用数据类：
+
+```kotlin
+HarnessPatch(id = "terminal-bash", disabled = true)
+HarnessPatch(insert = listOf(HarnessPlugin(
+    id = "my-plugin",
+    name = "@example/dsh-plugin",
+    config = mapOf("enabled" to true, "limit" to 10),
+)))
+```
+
+Java 使用相同数据类构造器、`HarnessPatch.providers(...)` / `mcpServers(...)` 和 builder 的 `patches(...)`。
+
+已有 YAML/JSON 文件使用 `HarnessConfig(patchFiles = listOf(Path.of("tools.patch.yml")))` 或 `builder.patchFiles(...)`。SDK 首次启动子进程时才把全部内联操作写入一个私有临时目录中的 JSON 文件，之后依次传递 `patchFiles`，所以原始文件可覆盖内联配置。启动失败会清理生成文件；正常关闭、初始化失败或异常退出后的 `close()` 在确认子进程退出后清理它们。用户文件由调用者维护。每个客户端独立拥有生成文件，创建配置或 Spring 容器不会创建这些文件。
+
+持久化工具与 MCP 配置归 profile；调用级 patch 在本客户端下次启动时生效。配置覆盖采用原生的完整替换规则，覆盖 `llm-pi-ai` 时要提供希望保留的全部 providers。
 
 ## 兼容与验证边界
 
 协议基线：上游 checkout `fcc0ad4621`，公开 npm CLI `@deepseek-ai/dsh@0.2.2-rc.1`。权威协议是上游 `packages/sdk/protocol/src/types.ts`；SDK 高层活动算法对齐该版本 TS/Python SDK。库不强制所有未来运行时与基线版本相等，但只宣称对基线完成验证。
 
-本地验证覆盖 JDK 17/21、Java/Kotlin 消费、双向 RPC、Unicode、命令关联、并发 Session、独立订阅与溢出、回调嵌套请求、取消与超时、stderr、握手失败/异常退出/强制回收。未经修改的真实 CLI 配合本地 Messages HTTP 夹具，覆盖 sdk-minimal 的模型请求/并发/自动 Session ID 与恢复/工作目录/home 默认发现与配置优先级，以及完整 sdk 的 permission/compact/max-tokens/用户问题。CI 配置覆盖 Linux/macOS/Windows；本机执行只代表 macOS，真实云模型、Windows/Linux 平台、图片入库、MCP 服务接入与具体外部工具仍需相应环境验证。
+本地验证覆盖 JDK 17/21、Java/Kotlin 消费、双向 RPC、Unicode、命令关联、并发 Session、独立订阅与溢出、回调嵌套请求、取消与超时、stderr、握手失败/异常退出/强制回收。未经修改的真实 CLI 配合本地 Messages HTTP 夹具，覆盖 sdk-minimal 的模型请求/并发/自动 Session ID 与恢复/工作目录/home 默认发现与配置优先级，以及完整 sdk 的 permission/compact/max-tokens/用户问题。CI 配置覆盖 Linux/macOS/Windows；本机执行只代表 macOS，真实云模型、Windows/Linux 平台、图片入库与具体外部工具仍需相应环境验证。Spring 集成的真实 MCP 与 OpenAI 兼容端点验证见 [Spring 文档](spring.md)。

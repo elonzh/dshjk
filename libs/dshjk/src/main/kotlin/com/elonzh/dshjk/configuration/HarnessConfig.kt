@@ -11,7 +11,7 @@ class HarnessConfig @JvmOverloads constructor(
     val cwd: Path = Path.of("").toAbsolutePath(),
     val runtime: RuntimeCommand = RuntimeCommand.executable("dsh"),
     val profile: String = "sdk",
-    patches: List<Path> = emptyList(),
+    patches: List<HarnessPatch> = emptyList(),
     val processCwd: Path = cwd,
     environment: Map<String, String> = emptyMap(),
     val inheritEnvironment: Boolean = true,
@@ -27,8 +27,11 @@ class HarnessConfig @JvmOverloads constructor(
     val notificationBufferCapacity: Int = 8192,
     val approvalHandler: ApprovalHandler? = null,
     val userQuestionHandler: UserQuestionHandler? = null,
+    patchFiles: List<Path> = emptyList(),
 ) {
-    val patches: List<Path> = java.util.List.copyOf(patches.map { it.toAbsolutePath().normalize() })
+    val patches: List<HarnessPatch> = java.util.List.copyOf(patches)
+    internal val patchDocument = kotlinx.serialization.json.JsonArray(this.patches.map { it.toJson() }).toString()
+    val patchFiles: List<Path> = java.util.List.copyOf(patchFiles.map { it.toAbsolutePath().normalize() })
     val environment: Map<String, String> = java.util.Map.copyOf(environment)
     init {
         require(profile.isNotBlank() && !profile.startsWith("-")) { "Invalid profile" }
@@ -44,7 +47,8 @@ class HarnessConfig @JvmOverloads constructor(
         private var cwd = Path.of("").toAbsolutePath()
         private var runtime = RuntimeCommand.executable("dsh")
         private var profile = "sdk"
-        private var patches = emptyList<Path>()
+        private var patches = emptyList<HarnessPatch>()
+        private var patchFiles = emptyList<Path>()
         private var environment = emptyMap<String, String>()
         private var inheritEnvironment = true
         private var processCwd: Path? = null
@@ -64,7 +68,8 @@ class HarnessConfig @JvmOverloads constructor(
         fun cwd(value: Path) = apply { cwd = value }
         fun runtime(value: RuntimeCommand) = apply { runtime = value }
         fun profile(value: String) = apply { profile = value }
-        fun patches(value: List<Path>) = apply { patches = value.toList() }
+        fun patches(value: List<HarnessPatch>) = apply { patches = value.toList() }
+        fun patchFiles(value: List<Path>) = apply { patchFiles = value.toList() }
         fun environment(value: Map<String, String>) = apply { environment = value.toMap() }
         fun inheritEnvironment(value: Boolean) = apply { inheritEnvironment = value }
         fun processCwd(value: Path) = apply { processCwd = value }
@@ -82,7 +87,7 @@ class HarnessConfig @JvmOverloads constructor(
         fun userQuestionHandler(value: UserQuestionHandler) = apply { question = value }
         fun build() = HarnessConfig(home, cwd, runtime, profile, patches, processCwd ?: cwd, environment,
             inheritEnvironment, provider, model, effort, tokens, initializeTimeout, requestTimeout,
-            shutdownTimeout, eofGrace, terminateGrace, capacity, approval, question)
+            shutdownTimeout, eofGrace, terminateGrace, capacity, approval, question, patchFiles)
     }
     companion object { @JvmStatic @JvmOverloads fun builder(dshHome: Path? = null) = Builder(dshHome) }
 }

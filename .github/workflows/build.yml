@@ -36,4 +36,6 @@ jobs:
         if: always()
         with:
           name: reports-${{ matrix.os }}-${{ matrix.testJava }}
-          path: libs/dshjk/build/reports/tests/
+          path: |
+            libs/*/build/reports/tests/
+            examples/spring-boot/build/reports/tests/
