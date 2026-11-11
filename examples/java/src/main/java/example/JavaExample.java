@@ -24,7 +24,7 @@ public final class JavaExample {
             try (var notifications = harness.getClient().subscribe(session.getId());
                  var console = new ConsoleSubscriber(session.getId())) {
                 notifications.events().subscribe(console);
-                var result = session.run(args[0]);
+                var result = session.runStreaming(args[0]);
 
                 // Closing the owner ends the stream after its buffered events have drained.
                 console.expectRuntimeClose();

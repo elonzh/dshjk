@@ -112,8 +112,18 @@ class NativeSpringAiIntegrationTest {
             requests.add(HarnessProtocol.json.parseToJsonElement(body).jsonObject)
             paths.add(exchange.requestURI.path)
             auth.add(exchange.requestHeaders.getFirst("Authorization"))
-            val chunk = """{"id":"fixture","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"role":"assistant","content":"Native model connection reused."},"finish_reason":null}]}"""
-            val stop = """{"id":"fixture","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}"""
+            val checkEnvironment = requests.size % 2 == 1
+            val shell = if (System.getProperty("os.name").startsWith("Windows")) "pwsh" else "bash"
+            val probe = """node -e "console.log(Object.keys(process.env).some(k=>/^DSH(JK)?_SPRING_AI_/i.test(k))?'CREDENTIAL_PRESENT':'CREDENTIAL_ABSENT')""""
+            val arguments = buildJsonObject { put("command", probe) }.toString()
+            val delta = if (checkEnvironment) {
+                """{"role":"assistant","tool_calls":[{"index":0,"id":"call-env","type":"function","function":{"name":"$shell","arguments":${JsonPrimitive(arguments)}}}]}"""
+            } else {
+                """{"role":"assistant","content":"Native model connection reused."}"""
+            }
+            val finish = if (checkEnvironment) "tool_calls" else "stop"
+            val chunk = """{"id":"fixture","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":$delta,"finish_reason":null}]}"""
+            val stop = """{"id":"fixture","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"$finish"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}"""
             val bytes = "data: $chunk\n\ndata: $stop\n\ndata: [DONE]\n\n".toByteArray(Charsets.UTF_8)
             exchange.responseHeaders.add("Content-Type", "text/event-stream")
             exchange.sendResponseHeaders(200, bytes.size.toLong())
@@ -143,9 +153,15 @@ class NativeSpringAiIntegrationTest {
                 pid = checkNotNull(harness.client.pid)
             }
             assertThat(ProcessHandle.of(pid).map { it.isAlive }.orElse(false)).isFalse()
-            assertThat(paths).containsExactly("/v1/chat/completions", "/v1/chat/completions")
-            assertThat(auth).containsExactly("Bearer fixture-derived-key", "Bearer fixture-derived-key")
-            assertThat(requests).hasSize(2)
+            assertThat(paths).containsExactlyElementsOf(List(4) { "/v1/chat/completions" })
+            assertThat(auth).containsExactlyElementsOf(List(4) { "Bearer fixture-derived-key" })
+            assertThat(requests).hasSize(4)
+            for (request in listOf(requests[1], requests[3])) {
+                val toolResult = request.getValue("messages").jsonArray.map { it.jsonObject }
+                    .single { it["role"]?.jsonPrimitive?.content == "tool" }
+                assertThat(toolResult.getValue("content").toString()).contains("CREDENTIAL_ABSENT")
+                    .doesNotContain("CREDENTIAL_PRESENT", "fixture-derived-key")
+            }
             requests.forEach {
                 assertThat(it.getValue("model").jsonPrimitive.content).isEqualTo("gpt-4o-mini")
                 assertThat(it.getValue("stream").jsonPrimitive.boolean).isTrue()

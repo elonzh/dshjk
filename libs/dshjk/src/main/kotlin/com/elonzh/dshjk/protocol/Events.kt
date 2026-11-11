@@ -27,3 +27,6 @@ sealed class HarnessNotification(val method: NotificationMethod, open val params
 }
 data class RunResult(val sessionId: String, val finalResponse: String, val finishReason: FinishReason?,
     val events: List<SessionEvent>, val notifications: List<HarnessNotification>)
+
+/** The final root-session outcome of a streamed run. */
+data class RunSummary(val sessionId: String, val finalResponse: String, val finishReason: FinishReason?)

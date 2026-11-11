@@ -11,6 +11,21 @@ class HarnessSession internal constructor(val harness: DeepSeekHarness, val id: 
     @JvmSynthetic suspend fun waitForIdle() { harness.start(); harness.client.waitForSession(id) }
     @JvmSynthetic suspend fun run(input: String, observer: NotificationObserver? = null): RunResult = run(HarnessProtocol.text(input), observer)
     @JvmSynthetic suspend fun run(input: List<ContentBlock>, observer: NotificationObserver? = null): RunResult {
+        val notifications = mutableListOf<HarnessNotification>()
+        val summary = runStreaming(input) {
+            notifications.add(it)
+            observer?.onNotification(it)
+        }
+        val events = notifications.mapNotNull { notification ->
+            (notification as? HarnessNotification.Event)?.takeIf { it.sessionId == id }?.event
+        }
+        return RunResult(id, summary.finalResponse, summary.finishReason, events, notifications.toList())
+    }
+    @JvmSynthetic suspend fun runStreaming(input: String, observer: NotificationObserver? = null): RunSummary =
+        runStreaming(HarnessProtocol.text(input), observer)
+
+    /** Delivers notifications as they arrive and retains only the final root reply and finish reason. */
+    @JvmSynthetic suspend fun runStreaming(input: List<ContentBlock>, observer: NotificationObserver? = null): RunSummary {
         harness.start()
         val subscription = harness.client.subscribe(id)
         try {
@@ -36,14 +51,18 @@ class HarnessSession internal constructor(val harness: DeepSeekHarness, val id: 
     @JvmName("waitForIdle") fun waitForIdleBlocking() = runBlocking { waitForIdle() }
     @JvmName("run") @JvmOverloads fun runBlocking(input: String, observer: NotificationObserver? = null): RunResult = runBlocking { run(input, observer) }
     @JvmName("run") @JvmOverloads fun runBlocking(input: List<ContentBlock>, observer: NotificationObserver? = null): RunResult = runBlocking { run(input, observer) }
+    @JvmName("runStreaming") @JvmOverloads fun runStreamingBlocking(input: String, observer: NotificationObserver? = null): RunSummary =
+        runBlocking { runStreaming(input, observer) }
+    @JvmName("runStreaming") @JvmOverloads fun runStreamingBlocking(input: List<ContentBlock>, observer: NotificationObserver? = null): RunSummary =
+        runBlocking { runStreaming(input, observer) }
 }
 
 private class RunActivity(private val id: String, private val receipt: QueryResult, private val observer: NotificationObserver?) {
     private var received = false
     var commandDone = false
         private set
-    private val events = mutableListOf<SessionEvent>()
-    private val notifications = mutableListOf<HarnessNotification>()
+    private var finalResponse = ""
+    private var finishReason: FinishReason? = null
     fun record(n: HarnessNotification): Boolean {
         if (n is HarnessNotification.QueryCompleted) return false
         val event = (n as? HarnessNotification.Event)?.takeIf { it.sessionId == id }?.event
@@ -54,15 +73,19 @@ private class RunActivity(private val id: String, private val receipt: QueryResu
             }
             if (!received) return false
         }
-        if (receipt is QueryResult.Command && (event?.data as? SessionEventData.CommandDone)?.commandId == receipt.execution.commandId) commandDone = true
-        if (event != null) events.add(event)
-        notifications.add(n)
+        when (val data = event?.data) {
+            is SessionEventData.CommandDone -> if (receipt is QueryResult.Command && data.commandId == receipt.execution.commandId) {
+                commandDone = true
+            }
+            is SessionEventData.AssistantMessage -> {
+                finalResponse = data.message.content.filterIsInstance<ContentBlock.Text>().joinToString("") { it.text }
+            }
+            is SessionEventData.TurnEnded -> finishReason = data.reason.kind
+            else -> Unit
+        }
         observer?.onNotification(n)
         return true
     }
-    fun result(completed: HarnessNotification.QueryCompleted? = null): RunResult = RunResult(id,
-        completed?.finalResponse ?: events.map { it.data }.filterIsInstance<SessionEventData.AssistantMessage>().lastOrNull()?.message?.content
-            ?.filterIsInstance<ContentBlock.Text>()?.joinToString("") { it.text }.orEmpty(),
-        completed?.finishReason ?: events.map { it.data }.filterIsInstance<SessionEventData.TurnEnded>().lastOrNull()?.reason?.kind,
-        events.toList(), notifications.toList())
+    fun result(completed: HarnessNotification.QueryCompleted? = null): RunSummary =
+        RunSummary(id, completed?.finalResponse ?: finalResponse, completed?.finishReason ?: finishReason)
 }

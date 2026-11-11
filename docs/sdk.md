@@ -54,11 +54,13 @@ val result = session.run(input)
 
 多个 Session 或同 Session 的输入可以重叠；每次调用持有独立订阅，不会竞争消费同一队列。普通输入的活动区间可能包含同 Session 的重叠工作，与官方 SDK 一致。observer 按接收顺序同步执行；其异常结束本次收集并释放订阅，不撤销已提交给运行时的工作。
 
+需要逐条处理事件并返回最终结果时，Kotlin 和 Java 都可以使用 `runStreaming(input, observer)`。它返回 `RunSummary`，包含 Session ID、最终文本和结束原因。需要在运行结束后访问本次事件和通知时，使用返回 `RunResult` 的 `run()`。
+
 ## 事件订阅
 
 原生 SDK 推送已记录的 `session.event` 和状态通知，assistant 文本随每个模型步骤结算后的 `assistant/message` 到达。`AssistantMessage.stream` 是该次模型尝试的历史分块记录，不能据此宣称接收到了生成过程中的实时 token delta。消费方应在事件到达时输出该条消息的文本，并同时处理工具调用、工具结果和状态变化。
 
-可运行的 [Kotlin Flow 示例](../examples/kotlin/src/main/kotlin/example/KotlinExample.kt) 和 [Java JDK Publisher 示例](../examples/java/src/main/java/example/JavaExample.java) 都先创建独立订阅，再开始 `run()`；主 Session 文本输出到 stdout，工具、命令、子 Agent、状态和结束原因输出到 stderr。命令有文本结果时也写入 stdout。输入结束后关闭运行时，等待已收到的事件排空，再释放订阅；正常关闭导致的 `TransportClosedException` 在示例中作为结束信号，其他订阅错误继续向调用者传播。结果文本已由事件处理器输出，因此不会再次打印 `finalResponse`。
+可运行的 [Kotlin Flow 示例](../examples/kotlin/src/main/kotlin/example/KotlinExample.kt) 和 [Java JDK Publisher 示例](../examples/java/src/main/java/example/JavaExample.java) 都先创建独立订阅，再开始 `runStreaming()`。主 Session 文本输出到 stdout，工具、命令、子 Agent、状态和结束原因输出到 stderr。命令有文本结果时也写入 stdout。输入结束后关闭运行时，等待已收到的事件排空，再释放订阅；正常关闭导致的 `TransportClosedException` 在示例中作为结束信号，其他订阅错误继续向调用者传播。结果文本已由事件处理器输出，因此不会再次打印 `finalResponse`。
 
 六个已知 SDK 通知都有独立类型：`Event`、`Status`、`QueryCompleted`、`SubagentStarted`、`SubagentFinished`、`QuestionCancelled`。`method` 使用 `NotificationMethod`；内置方法是 `NotificationMethod.Builtin` 枚举，新增通知使用 `Extension`，所有通知保留原始 params。
 
@@ -134,15 +136,15 @@ Java 使用 builder 的同名方法和相同 SAM 接口。`approval/request` 返
 | `provider` / `model` | `deepseek-official` / `deepseek-v4-flash` |
 | `reasoningEffort` / `maxTokens` | 留空，使用适配器默认；配置时必须非空/正整数 |
 | `initializeTimeout` | 30 秒，等待首次 profile 握手 |
-| `requestTimeout` | 无界；只限制 RPC 响应等待，不限制之后的输入活动 |
+| `requestTimeout` | 默认无界。配置后限制等待发送和接收 RPC 应答的时间，后续 Agent 活动有独立生命周期 |
 | `shutdownTimeout` / `eofGrace` / `terminateGrace` | 1 / 6 / 3 秒 |
 | `notificationBufferCapacity` | 8192，每个订阅独立 |
 
 配置通过可省略的 `HarnessConfig()` 或 Java `HarnessConfig.builder()` 创建，集合在边界复制为不可修改值，内联 patch 的 JSON 在构造配置时形成快照。省略 `dshHome` 时，SDK 保留子进程环境，由运行时解析 home，包括空白环境值回退和 `~` 展开；SDK 不在 JVM 内复制发现算法。启动参数按 argv 传递，不经 shell 解释；`RuntimeCommand.of` 支持显式 launcher 前缀，例如自定义 Node loader。SDK 不修改宿主全局环境。
 
-Kotlin 用 `closeAsync()`，Java 用 try-with-resources 的 `close()`；两者执行同一关闭实现。关闭先停止宿主回调，然后请求 shutdown、关闭 stdin 等待原生 EOF 清理，再依次 terminate / force terminate，并确认根运行时进程已退出。关闭幂等且终态，不能重新启动。Kotlin 的关闭使用 NonCancellable 以完成资源回收。
+Kotlin 用 `closeAsync()`，Java 用 try-with-resources 的 `close()`；两者执行同一关闭实现。关闭先停止宿主回调，在时限内尝试发送 shutdown 并等待 stdin EOF 清理。随后直接向根运行时进程发送终止信号，必要时强制终止，并确认进程已退出。关闭幂等且终态，不能重新启动。Kotlin 的关闭使用 NonCancellable 以完成资源回收。
 
-本地请求超时或协程取消会移除 pending 项、忽略迟到响应，但上游没有对应的 wire cancel：运行时工作可能继续，不能自动重试来“恢复”。要中止整个运行时须关闭其拥有者。SDK 不加入无依据的 Session abort 方法。
+本地请求超时或协程取消会撤回尚未开始的发送，移除等待项并忽略迟到响应。已开始写入的请求仍可能由运行时执行。要中止整个运行时须关闭其拥有者。SDK 不加入无依据的 Session abort 方法。
 
 `resumeSession(id)` 必须使用原来的 home；找不到、占用或不兼容的历史由原生报错，不创建替代会话。恢复不等于恢复旧 shell/browser 进程。`get/setWorkingDirectory` 可惰性创建 Session，相对目录由该 Session 当前目录解析，设置不改变原始目录元数据、权限或已有外部进程。
 

@@ -73,6 +73,13 @@ data class HarnessProperties(
     )
 }
 
+private val modelPluginIds = setOf("llm", "llm-pi-ai", "llm-deepseek", "llm-deepseek-account")
+
 internal fun HarnessProperties.hasExplicitModelConfiguration(): Boolean =
-    provider != null || model != null || providers.isNotEmpty() || patches.isNotEmpty() ||
-        patchFiles.isNotEmpty() || environment.keys.any { it == "DEEPSEEK_API_KEY" || it == "DEEPSEEK_BASE_URL" }
+    provider != null || model != null || providers.isNotEmpty() ||
+        environment.keys.any { it == "DEEPSEEK_API_KEY" || it == "DEEPSEEK_BASE_URL" } ||
+        patches.any { patch ->
+            patch.id in modelPluginIds || patch.insert.orEmpty().any { plugin ->
+                plugin.id in modelPluginIds || plugin.name.startsWith("@deepseek-ai/dsh-llm-")
+            }
+        }

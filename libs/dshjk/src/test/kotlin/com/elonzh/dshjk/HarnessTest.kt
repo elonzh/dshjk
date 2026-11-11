@@ -9,6 +9,7 @@ import kotlinx.serialization.json.*
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
 import org.junit.jupiter.api.io.TempDir
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
 import java.util.concurrent.CountDownLatch
@@ -160,6 +161,54 @@ class HarnessTest {
         }
         assertFalse(h.client.isAlive)
     }
+    @Test fun `request timeout and close are bounded even when the child never reads stdin`(): Unit = runBlocking {
+        val fixture = root.resolve("stalled.mjs")
+        Files.writeString(fixture, """
+            process.on('SIGTERM', () => {});
+            console.error('ready');
+            setTimeout(() => process.exit(0), 8000);
+        """.trimIndent())
+        val client = HarnessClient(HarnessConfig(
+            cwd = root, runtime = RuntimeCommand.node(fixture),
+            requestTimeout = Duration.ofMillis(500), shutdownTimeout = Duration.ofMillis(100),
+            eofGrace = Duration.ofMillis(100), terminateGrace = Duration.ofMillis(250),
+        ))
+        client.start()
+        val handle = ProcessHandle.of(checkNotNull(client.pid)).orElseThrow()
+        try {
+            withTimeout(2000) {
+                while (!client.stderr().contains("ready")) delay(10)
+            }
+            withTimeout(3500) {
+                assertFailsWith<RequestTimeoutException> {
+                    client.prompt("stalled", HarnessProtocol.text("x".repeat(8 * 1024 * 1024)))
+                }
+                assertTrue(handle.isAlive)
+                client.closeAsync()
+            }
+            assertFalse(handle.isAlive)
+        } finally {
+            if (handle.isAlive) handle.destroyForcibly()
+            client.closeAsync()
+        }
+    }
+
+    @Test fun `streaming summary preserves prompt and command outcomes while delivering notifications`(): Unit = runBlocking {
+        DeepSeekHarness(config()).use { harness ->
+            val session = harness.session()
+            var sawRootReply = false
+            var sawChildReply = false
+            val summary = session.runStreaming("summary") { notification ->
+                if (notification is HarnessNotification.Event && notification.event.data is SessionEventData.AssistantMessage) {
+                    if (notification.sessionId == session.id) sawRootReply = true else sawChildReply = true
+                }
+            }
+            assertTrue(sawRootReply && sawChildReply)
+            assertEquals(RunSummary(session.id, "summary", FinishReason.Builtin.COMPLETED), summary)
+            assertEquals("command complete", session.runStreaming("/early").finalResponse)
+        }
+    }
+
     @Test fun `unconsumed subscription survives local timeout`(): Unit = runBlocking {
         DeepSeekHarness(config()).use { h ->
             h.start(); val sub = h.client.subscribe("x")

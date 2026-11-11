@@ -16,7 +16,7 @@ internal fun harnessConfiguration(
     springAi: ObjectProvider<SpringAiModelConfiguration>,
 ): HarnessConfig {
     val derived = if (properties.hasExplicitModelConfiguration()) null else springAi.ifAvailable
-    val credentialReference = derived?.apiKey?.let { "DSHJK_SPRING_AI_${UUID.randomUUID().toString().replace("-", "")}" }
+    val credentialReference = derived?.apiKey?.let { "DSH_SPRING_AI_API_KEY_${UUID.randomUUID().toString().replace("-", "")}" }
     val environment = credentialReference?.let { mapOf(it to checkNotNull(derived.apiKey)) }.orEmpty() + properties.environment
     val generated = buildList {
         if (derived != null) {

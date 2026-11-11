@@ -7,28 +7,32 @@ import com.elonzh.dshjk.configuration.LlmModelConfig
 import com.elonzh.dshjk.configuration.LlmProviderConfig
 import org.apache.commons.logging.LogFactory
 import org.springframework.ai.chat.model.ChatModel
-import org.springframework.ai.openai.OpenAiChatModel
 import org.springframework.ai.anthropic.AnthropicChatModel
+import org.springframework.ai.anthropic.http.okhttp.AnthropicHttpClientBuilderCustomizer
+import org.springframework.ai.model.openai.autoconfigure.OpenAiAutoConfigurationUtil
+import org.springframework.ai.model.openai.autoconfigure.OpenAiChatProperties
+import org.springframework.ai.model.openai.autoconfigure.OpenAiCommonProperties
+import org.springframework.ai.openai.OpenAiChatModel
+import org.springframework.ai.openai.http.okhttp.OpenAiHttpClientBuilderCustomizer
+import org.springframework.ai.openai.setup.OpenAiSetup
 import org.springframework.beans.factory.ObjectProvider
+import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.context.properties.EnableConfigurationProperties
-import org.springframework.boot.context.properties.bind.Bindable
-import org.springframework.boot.context.properties.bind.Binder
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.core.Ordered
 import org.springframework.core.annotation.Order
-import org.springframework.core.env.Environment
 import java.net.URI
+
+private const val OPENAI_AUTO_CONFIG = "org.springframework.ai.model.openai.autoconfigure.OpenAiChatAutoConfiguration"
+private const val ANTHROPIC_AUTO_CONFIG = "org.springframework.ai.model.anthropic.autoconfigure.AnthropicChatAutoConfiguration"
 
 @AutoConfiguration(
     before = [HarnessAutoConfiguration::class],
-    afterName = [
-        "org.springframework.ai.model.openai.autoconfigure.OpenAiChatAutoConfiguration",
-        "org.springframework.ai.model.anthropic.autoconfigure.AnthropicChatAutoConfiguration",
-    ],
+    afterName = [OPENAI_AUTO_CONFIG, ANTHROPIC_AUTO_CONFIG],
 )
 @ConditionalOnClass(ChatModel::class)
 @ConditionalOnMissingBean(HarnessConfig::class, DeepSeekHarness::class)
@@ -61,31 +65,21 @@ class HarnessSpringAiAutoConfiguration {
     internal class OpenAiExtraction {
         @Bean
         @Order(Ordered.LOWEST_PRECEDENCE)
-        fun openAiModelConfigurationExtractor(environment: Environment): SpringAiModelConfigurationExtractor =
+        fun openAiModelConfigurationExtractor(beans: ConfigurableListableBeanFactory): SpringAiModelConfigurationExtractor =
             SpringAiModelConfigurationExtractor { model ->
                 if (model !is OpenAiChatModel) return@SpringAiModelConfigurationExtractor null
                 val options = model.options
-                if (options.isMicrosoftFoundry || options.isGitHubModels || options.credential != null || options.proxy != null ||
-                    property(environment, "spring.ai.openai", "microsoft-foundry").toBoolean() ||
-                    property(environment, "spring.ai.openai", "github-models").toBoolean()) {
-                    return@SpringAiModelConfigurationExtractor null
-                }
-                val prefix = "spring.ai.openai"
-                val key = options.apiKey ?: property(environment, prefix, "api-key") ?: environment.getProperty("OPENAI_API_KEY")
-                if (key.isNullOrBlank()) return@SpringAiModelConfigurationExtractor null
-                val baseUrl = options.baseUrl ?: property(environment, prefix, "base-url")
-                    ?: environment.getProperty("OPENAI_BASE_URL") ?: "https://api.openai.com/v1"
-                val headers = headers(environment, prefix) + options.customHeaders.orEmpty() + buildMap {
-                    options.organizationId?.let { put("OpenAI-Organization", it) }
-                }
-                if (hasCredentialHeaders(headers)) return@SpringAiModelConfigurationExtractor null
                 val maxTokens = options.maxCompletionTokens ?: options.maxTokens
-                SpringAiModelConfiguration("openai", options.model, LlmProviderConfig(
-                    api = LlmApi.OPENAI_COMPLETIONS,
-                    baseUrl = URI.create(baseUrl),
-                    models = listOf(LlmModelConfig(options.model, maxTokens = maxTokens)),
-                    headers = headers,
-                ), key, maxTokens)
+                if (beans.createdModel(model, "openAiChatModel", OPENAI_AUTO_CONFIG)) {
+                    extractAutoConfiguredOpenAi(beans, options.model, maxTokens)
+                } else {
+                    if (options.credential != null || options.proxy != null ||
+                        OpenAiSetup.detectModelProvider(options.isMicrosoftFoundry, options.isGitHubModels,
+                            options.baseUrl, options.microsoftDeploymentName, options.microsoftFoundryServiceVersion)
+                            != OpenAiSetup.ModelProvider.OPEN_AI) return@SpringAiModelConfigurationExtractor null
+                    modelConfiguration("openai", LlmApi.OPENAI_COMPLETIONS, options.model, maxTokens,
+                        options.baseUrl, options.apiKey, openAiHeaders(options.customHeaders, options.organizationId))
+                }
             }
     }
 
@@ -94,24 +88,21 @@ class HarnessSpringAiAutoConfiguration {
     internal class AnthropicExtraction {
         @Bean
         @Order(Ordered.LOWEST_PRECEDENCE)
-        fun anthropicModelConfigurationExtractor(environment: Environment): SpringAiModelConfigurationExtractor =
+        fun anthropicModelConfigurationExtractor(beans: ConfigurableListableBeanFactory): SpringAiModelConfigurationExtractor =
             SpringAiModelConfigurationExtractor { model ->
                 if (model !is AnthropicChatModel) return@SpringAiModelConfigurationExtractor null
                 val options = model.options
                 if (options.proxy != null) return@SpringAiModelConfigurationExtractor null
-                val prefix = "spring.ai.anthropic"
-                val key = options.apiKey ?: property(environment, prefix, "api-key") ?: environment.getProperty("ANTHROPIC_API_KEY")
-                if (key.isNullOrBlank()) return@SpringAiModelConfigurationExtractor null
-                val baseUrl = options.baseUrl ?: property(environment, prefix, "base-url")
-                    ?: environment.getProperty("ANTHROPIC_BASE_URL") ?: "https://api.anthropic.com"
-                val headers = headers(environment, prefix) + options.httpHeaders.orEmpty()
-                if (hasCredentialHeaders(headers)) return@SpringAiModelConfigurationExtractor null
-                SpringAiModelConfiguration("anthropic", options.model, LlmProviderConfig(
-                    api = LlmApi.ANTHROPIC_MESSAGES,
-                    baseUrl = URI.create(baseUrl),
-                    models = listOf(LlmModelConfig(options.model, maxTokens = options.maxTokens)),
-                    headers = headers,
-                ), key, options.maxTokens)
+                val stockModel = beans.createdModel(model, "anthropicChatModel", ANTHROPIC_AUTO_CONFIG)
+                if (stockModel && beans.getBeanNamesForType(AnthropicHttpClientBuilderCustomizer::class.java).isNotEmpty()) {
+                    return@SpringAiModelConfigurationExtractor null
+                }
+                val baseUrl = if (stockModel) {
+                    options.baseUrl ?: System.getenv("ANTHROPIC_BASE_URL") ?: "https://api.anthropic.com"
+                } else options.baseUrl
+                val key = if (stockModel) options.apiKey ?: System.getenv("ANTHROPIC_API_KEY") else options.apiKey
+                modelConfiguration("anthropic", LlmApi.ANTHROPIC_MESSAGES, options.model, options.maxTokens,
+                    baseUrl, key, options.httpHeaders.orEmpty())
             }
     }
 
@@ -120,19 +111,55 @@ class HarnessSpringAiAutoConfiguration {
     }
 }
 
-private fun property(environment: Environment, prefix: String, name: String): String? {
-    val binder = Binder.get(environment)
-    return binder.bind("$prefix.chat.$name", String::class.java).orElse(null)
-        ?: binder.bind("$prefix.$name", String::class.java).orElse(null)
+// Only the stock factory is known to consume the Spring AI connection properties.
+private fun ConfigurableListableBeanFactory.createdModel(model: ChatModel, name: String, factoryClass: String): Boolean {
+    if (!containsBeanDefinition(name) || getSingleton(name) !== model) return false
+    val definition = getMergedBeanDefinition(name)
+    val factory = definition.factoryBeanName ?: return false
+    return definition.factoryMethodName == name && getType(factory)?.name == factoryClass
 }
 
-private fun headers(environment: Environment, prefix: String): Map<String, String> {
-    val binder = Binder.get(environment)
-    val type = Bindable.mapOf(String::class.java, String::class.java)
-    val common = binder.bind("$prefix.custom-headers", type).orElse(null).orEmpty()
-    val chat = binder.bind("$prefix.chat.custom-headers", type).orElse(null).orEmpty()
-    return common + chat
+private fun extractAutoConfiguredOpenAi(
+    beans: ConfigurableListableBeanFactory,
+    model: String,
+    maxTokens: Int?,
+): SpringAiModelConfiguration? {
+    if (beans.getBeanNamesForType(OpenAiHttpClientBuilderCustomizer::class.java).isNotEmpty()) return null
+    val connection = OpenAiAutoConfigurationUtil.resolveCommonProperties(
+        beans.getBean(OpenAiCommonProperties::class.java),
+        beans.getBean(OpenAiChatProperties::class.java),
+    )
+    if (connection.credential != null || connection.proxy != null) return null
+    val baseUrl = connection.baseUrl ?: System.getenv("AZURE_OPENAI_BASE_URL") ?: System.getenv("OPENAI_BASE_URL")
+    if (OpenAiSetup.detectModelProvider(connection.isMicrosoftFoundry, connection.isGitHubModels,
+            baseUrl, connection.microsoftDeploymentName, connection.microsoftFoundryServiceVersion)
+        != OpenAiSetup.ModelProvider.OPEN_AI) return null
+    return modelConfiguration("openai", LlmApi.OPENAI_COMPLETIONS, model, maxTokens,
+        baseUrl?.takeIf { it.isNotBlank() } ?: "https://api.openai.com/v1",
+        connection.apiKey ?: System.getenv("OPENAI_API_KEY"),
+        openAiHeaders(connection.customHeaders, connection.organizationId))
 }
 
-private fun hasCredentialHeaders(headers: Map<String, String>): Boolean =
-    headers.keys.any { it.equals("Authorization", ignoreCase = true) || it.equals("x-api-key", ignoreCase = true) }
+private fun openAiHeaders(headers: Map<String, String>?, organization: String?): Map<String, String> =
+    if (organization == null) headers.orEmpty() else mapOf("OpenAI-Organization" to organization) + headers.orEmpty()
+
+private val credentialHeader = Regex("authorization|cookie|api[-_]?key|token|secret|password", RegexOption.IGNORE_CASE)
+
+private fun modelConfiguration(
+    provider: String,
+    api: LlmApi,
+    model: String,
+    maxTokens: Int?,
+    baseUrl: String?,
+    apiKey: String?,
+    headers: Map<String, String>,
+): SpringAiModelConfiguration? {
+    if (baseUrl.isNullOrBlank() || apiKey.isNullOrBlank() || headers.keys.any(credentialHeader::containsMatchIn)) return null
+    val connection = try {
+        LlmProviderConfig(api = api, baseUrl = URI.create(baseUrl),
+            models = listOf(LlmModelConfig(model, maxTokens = maxTokens)), headers = headers)
+    } catch (_: IllegalArgumentException) {
+        return null
+    }
+    return SpringAiModelConfiguration(provider, model, connection, apiKey, maxTokens)
+}

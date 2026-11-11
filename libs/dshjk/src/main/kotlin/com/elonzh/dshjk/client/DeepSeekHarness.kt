@@ -38,6 +38,10 @@ class DeepSeekHarness @JvmOverloads constructor(val config: HarnessConfig = Harn
         session(sessionId).run(input, observer)
     @JvmSynthetic suspend fun run(input: List<ContentBlock>, sessionId: String? = null, observer: NotificationObserver? = null): RunResult =
         session(sessionId).run(input, observer)
+    @JvmSynthetic suspend fun runStreaming(input: String, sessionId: String? = null, observer: NotificationObserver? = null): RunSummary =
+        session(sessionId).runStreaming(input, observer)
+    @JvmSynthetic suspend fun runStreaming(input: List<ContentBlock>, sessionId: String? = null, observer: NotificationObserver? = null): RunSummary =
+        session(sessionId).runStreaming(input, observer)
     @JvmSynthetic suspend fun closeAsync() = withContext(NonCancellable) {
         // Teardown must not wait for an initialize response holding lifecycle.
         client.closeAsync()
@@ -50,4 +54,8 @@ class DeepSeekHarness @JvmOverloads constructor(val config: HarnessConfig = Harn
         runBlocking { run(input, sessionId, observer) }
     @JvmName("run") @JvmOverloads fun runBlocking(input: List<ContentBlock>, sessionId: String? = null, observer: NotificationObserver? = null): RunResult =
         runBlocking { run(input, sessionId, observer) }
+    @JvmName("runStreaming") @JvmOverloads fun runStreamingBlocking(input: String, sessionId: String? = null, observer: NotificationObserver? = null): RunSummary =
+        runBlocking { runStreaming(input, sessionId, observer) }
+    @JvmName("runStreaming") @JvmOverloads fun runStreamingBlocking(input: List<ContentBlock>, sessionId: String? = null, observer: NotificationObserver? = null): RunSummary =
+        runBlocking { runStreaming(input, sessionId, observer) }
 }

@@ -2,7 +2,7 @@ package example.spring
 
 import com.elonzh.dshjk.client.DeepSeekHarness
 import com.elonzh.dshjk.protocol.NotificationObserver
-import com.elonzh.dshjk.protocol.RunResult
+import com.elonzh.dshjk.protocol.RunSummary
 import kotlinx.coroutines.runBlocking
 import org.springframework.core.task.AsyncTaskExecutor
 import org.springframework.http.MediaType
@@ -20,7 +20,7 @@ class HarnessController(private val harness: DeepSeekHarness, private val execut
     data class Result(val sessionId: String, val text: String, val finishReason: String?)
 
     @PostMapping("/run")
-    fun run(@RequestBody input: Input): Result = runBlocking { result(harness.run(input.text)) }
+    fun run(@RequestBody input: Input): Result = runBlocking { result(harness.runStreaming(input.text)) }
 
     @PostMapping("/run/events", produces = [MediaType.TEXT_EVENT_STREAM_VALUE])
     fun stream(@RequestBody input: Input): SseEmitter {
@@ -28,7 +28,7 @@ class HarnessController(private val harness: DeepSeekHarness, private val execut
         executor.execute {
             try {
                 val output = runBlocking {
-                    harness.run(input.text, observer = NotificationObserver { notification ->
+                    harness.runStreaming(input.text, observer = NotificationObserver { notification ->
                         emitter.send(SseEmitter.event().name(notification.method.wireName)
                             .data(notification.params.toString(), MediaType.APPLICATION_JSON))
                     })
@@ -42,6 +42,6 @@ class HarnessController(private val harness: DeepSeekHarness, private val execut
         return emitter
     }
 
-    private fun result(result: RunResult): Result =
+    private fun result(result: RunSummary): Result =
         Result(result.sessionId, result.finalResponse, result.finishReason?.wireName)
 }

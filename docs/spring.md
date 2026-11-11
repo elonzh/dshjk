@@ -117,14 +117,15 @@ spring:
         max-completion-tokens: 1024
 ```
 
-此时不需要重复填写 `dshjk.provider/model/providers`。提取器先读取 Bean 的公开 options，缺少连接字段时读取同一供应商的 `spring.ai.<provider>.chat.*`、`spring.ai.<provider>.*`，最后使用其标准环境认证与端点默认值。ChatModel 只作为配置来源；模型调用、工具选择、历史和 Agent 循环继续由原生 dsh 执行。
+Spring AI 自动创建的模型沿用其工厂解析出的连接配置。手工构建的 ChatModel 使用公开 options 中同时提供的 API 地址与密钥。需要复用自定义 HTTP client 的连接时，可以通过提取器显式提供完整配置。模型请求与 Agent 循环由原生 dsh 执行。
 
-- 显式 `HarnessConfig` / `DeepSeekHarness` Bean 使默认转换退让。
-- 提供 `dshjk.provider`、`model`、`providers`、任意 `patches` / `patch-files` 或显式 `environment.DEEPSEEK_API_KEY/DEEPSEEK_BASE_URL` 时，不自动推断供应商。其他子进程环境覆盖与发现结果合并。
-- 存在多个 ChatModel 时使用 `@Primary`；没有唯一候选时保留原生默认值，并记录原因。
-- `dshjk.spring-ai.enabled: false` 关闭自动发现。customizer 在提取和属性转换后执行。
+- 自定义 `HarnessConfig` 或 `DeepSeekHarness` Bean 接管配置。
+- 显式 `dshjk.provider`、`model`、`providers`、针对内置模型插件的内联 patch，以及显式 `environment.DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` 优先于自动发现。
+- 工具等内联 patch 和原始 `patch-files` 可以与模型发现组合，按原生顺序应用。若原始文件自带模型路由，请同时指定 `dshjk.provider` 和 `model`，或设置 `dshjk.spring-ai.enabled: false`。
+- 多个 ChatModel 可用时使用 `@Primary` 选择。候选不唯一或没有可提取连接时，使用原生默认配置。
+- customizer 在模型发现和属性转换后执行。
 
-提取结果在创建配置时形成快照。提取的 API key 通过每次自动配置生成的独立环境引用交给子进程，生成的 provider JSON 只包含引用名。SDK 不读取 ChatModel 的私有字段或发送探测请求；无法公开描述的 OAuth、代理、额外认证头或自定义 HTTP client 连接不承诺被复制。模型 options 与标准 Spring AI 属性都没有公开实际连接时，需要显式配置或提供提取器。
+提取结果在创建配置时形成快照。API key 通过独立的 `DSH_SPRING_AI_API_KEY_*` 环境变量交给 dsh，原生工具子进程会过滤该变量。生成的 provider patch 保存其引用名。OAuth、代理和认证请求头可通过显式连接配置或自定义提取器处理。
 
 其他 ChatModel 可注册有序 `SpringAiModelConfigurationExtractor`：
 
@@ -257,7 +258,7 @@ curl -N -H 'Content-Type: application/json' \
   http://127.0.0.1:8080/run/events
 ```
 
-`/run` 返回 Session ID、最终文本和结束原因。`/run/events` 逐条发送原生通知，最后发送 `result` 事件；输出粒度沿用 [SDK 事件语义](sdk.md#事件订阅)。SDK 等待放在 Boot 管理的任务执行器上，客户端断开导致发送失败时停止本次事件收集，运行时已开始的工作仍遵循原生生命周期。
+`/run` 返回 Session ID、最终文本和结束原因。`/run/events` 逐条发送原生通知，最后发送 `result` 事件。两条路径均使用 `runStreaming()`，SDK 只保留最终摘要。输出粒度见 [SDK 事件语义](sdk.md#事件订阅)。SDK 等待放在 Boot 管理的任务执行器上，客户端断开导致发送失败时停止本次事件收集，运行时已开始的工作仍遵循原生生命周期。
 
 ## 验证
 

@@ -18,7 +18,7 @@ import kotlin.concurrent.thread
 
 internal class RuntimeConnection(private val config: HarnessConfig) {
     private val stateLock = Any()
-    private val writeLock = Any()
+    private val writeLock = Mutex()
     private val closeMutex = Mutex()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val pending = ConcurrentHashMap<JsonElement, CompletableDeferred<JsonElement>>()
@@ -94,19 +94,34 @@ internal class RuntimeConnection(private val config: HarnessConfig) {
         val id = JsonPrimitive("req_${UUID.randomUUID()}")
         val waiter = CompletableDeferred<JsonElement>()
         synchronized(stateLock) { checkUsable(allowClosing); pending[id] = waiter }
-        try {
-            withContext(Dispatchers.IO) {
-                write(buildJsonObject { put("jsonrpc", "2.0"); put("id", id); put("method", method); put("params", params) })
+        // The caller can stop waiting even when the OS pipe is blocked in a write.
+        val send = scope.launch {
+            try {
+                val frame = buildJsonObject {
+                    put("jsonrpc", "2.0")
+                    put("id", id)
+                    put("method", method)
+                    put("params", params)
+                }
+                write(frame, allowClosing)
+            } catch (error: Exception) {
+                waiter.completeExceptionally(error)
             }
+        }
+        try {
             return if (timeout == null) waiter.await() else {
-                // A nullable wrapper distinguishes JSON null from timeout.
-                withTimeoutOrNull(timeout.toMillis()) { listOf(waiter.await()) }?.single()
+                withTimeoutOrNull(timeout.toMillis()) { waiter.await() }
                     ?: throw RequestTimeoutException("$method timed out waiting for dsh profile '${config.profile}' after $timeout\n${stderr()}")
             }
-        } finally { pending.remove(id); waiter.cancel() }
+        } finally {
+            send.cancel()
+            pending.remove(id)
+            waiter.cancel()
+        }
     }
-    private fun write(frame: JsonObject) = synchronized(writeLock) {
-        failure?.let { throw it }
+    private suspend fun write(frame: JsonObject, allowClosing: Boolean = false) = writeLock.withLock {
+        currentCoroutineContext().ensureActive()
+        checkUsable(allowClosing)
         try {
             val output = writer ?: throw diagnostic("Runtime not started")
             output.write(frame.toString()); output.newLine(); output.flush()
@@ -173,7 +188,7 @@ internal class RuntimeConnection(private val config: HarnessConfig) {
         callbacks[id] = Callback(token, job, questionId)
         if (closing || failure != null) { token.cancel(); callbacks.remove(id); job.cancel() } else job.start()
     }
-    private fun sendError(id: JsonElement, code: Int, message: String) = write(buildJsonObject {
+    private suspend fun sendError(id: JsonElement, code: Int, message: String) = write(buildJsonObject {
         put("jsonrpc", "2.0"); put("id", id); putJsonObject("error") { put("code", code); put("message", message) }
     })
     fun subscribe(root: String? = null): NotificationSubscription {
@@ -212,24 +227,32 @@ internal class RuntimeConnection(private val config: HarnessConfig) {
             synchronized(stateLock) { closing = true }
             callbacks.values.forEach { it.token.cancel(); it.job.cancel() }
             val child = process
-            if (child != null) {
-                runCatching { request(SdkRequestMethod.SHUTDOWN.wireName, timeout = config.shutdownTimeout, allowClosing = true) }
-                runCatching { child.outputStream.close() }
-                if (!child.waitFor(config.eofGrace.toMillis(), TimeUnit.MILLISECONDS)) {
-                    child.destroy()
-                    if (!child.waitFor(config.terminateGrace.toMillis(), TimeUnit.MILLISECONDS)) {
-                        child.destroyForcibly()
-                        if (!child.waitFor(config.terminateGrace.toMillis(), TimeUnit.MILLISECONDS)) throw diagnostic("Runtime termination could not be confirmed")
+            try {
+                if (child != null && child.isAlive) {
+                    runCatching { request(SdkRequestMethod.SHUTDOWN.wireName, timeout = config.shutdownTimeout, allowClosing = true) }
+                    // Closing stdin can itself wait for an in-flight write. Give EOF a bounded grace period.
+                    scope.launch { writeLock.withLock { runCatching { child.outputStream.close() } } }
+                    if (!child.waitFor(config.eofGrace.toMillis(), TimeUnit.MILLISECONDS)) {
+                        // Process.destroy() can close the pipe streams synchronously on the JDK.
+                        val handle = child.toHandle()
+                        handle.destroy()
+                        if (!child.waitFor(config.terminateGrace.toMillis(), TimeUnit.MILLISECONDS)) {
+                            handle.destroyForcibly()
+                            if (!child.waitFor(config.terminateGrace.toMillis(), TimeUnit.MILLISECONDS)) {
+                                throw diagnostic("Runtime termination could not be confirmed")
+                            }
+                        }
                     }
                 }
-                child.inputStream.close(); child.errorStream.close()
-                readerThread?.join(500); stderrThread?.join(500)
+                readerThread?.join(500)
+                stderrThread?.join(500)
+                patchFiles?.close()
+                disposed = true
+            } finally {
+                fail(diagnostic("Client closed"))
+                parents.clear()
+                scope.cancel()
             }
-            patchFiles?.close()
-            disposed = true
-            fail(diagnostic("Client closed"))
-            parents.clear()
-            scope.cancel()
         }
     }
 }

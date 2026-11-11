@@ -14,6 +14,7 @@ dependencies {
     implementation(libs.kotlin.reflect)
     compileOnly(libs.spring.ai.model)
     compileOnly(libs.spring.ai.openai)
+    compileOnly(libs.spring.ai.autoconfigure.openai)
     compileOnly(libs.spring.ai.anthropic)
     testImplementation(libs.spring.ai.autoconfigure.openai)
     testImplementation(libs.spring.ai.openai)

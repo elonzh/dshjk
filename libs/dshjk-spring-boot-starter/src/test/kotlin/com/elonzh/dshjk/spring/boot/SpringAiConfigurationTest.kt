@@ -1,6 +1,8 @@
 package com.elonzh.dshjk.spring.boot
 
 import com.elonzh.dshjk.configuration.*
+import com.openai.client.OpenAIClient
+import com.openai.client.OpenAIClientAsync
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.springframework.ai.anthropic.AnthropicChatModel
@@ -15,6 +17,7 @@ import org.springframework.ai.openai.OpenAiChatOptions
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.test.context.FilteredClassLoader
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
+import java.lang.reflect.Proxy
 import java.net.URI
 
 class SpringAiConfigurationTest {
@@ -89,13 +92,13 @@ class SpringAiConfigurationTest {
         for (properties in listOf(
             arrayOf("dshjk.provider=explicit", "dshjk.model=chosen"),
             arrayOf("dshjk.spring-ai.enabled=false"),
-            arrayOf("dshjk.patch-files[0]=custom.json"),
+            arrayOf("dshjk.patches[0].id=llm-pi-ai", "dshjk.patches[0].disabled=true"),
             arrayOf("dshjk.environment.DEEPSEEK_API_KEY=explicit-secret"),
         )) {
             runner.withBean(ChatModel::class.java, { openAi() }).withPropertyValues(*properties).run { context ->
                 val config = context.getBean(HarnessConfig::class.java)
                 assertThat(config.provider).isNotEqualTo("openai")
-                assertThat(config.patches).isEmpty()
+                assertThat(config.patches).noneMatch { it.toJson().toString().contains("openai-completions") }
                 assertThat(config.environment.values).doesNotContain("fixture-openai-secret")
             }
         }
@@ -105,6 +108,47 @@ class SpringAiConfigurationTest {
             assertThat(context).doesNotHaveBean(SpringAiModelConfiguration::class.java)
         }
     }
+
+    @Test
+    fun toolPatchesAndNativeFilesCanBeCombinedWithModelDiscovery() {
+        runner.withBean(ChatModel::class.java, { openAi() })
+            .withPropertyValues(
+                "dshjk.patches[0].id=terminal-bash", "dshjk.patches[0].disabled=true",
+                "dshjk.patch-files[0]=custom.json",
+            ).run { context ->
+                val config = context.getBean(HarnessConfig::class.java)
+                assertThat(config.provider).isEqualTo("openai")
+                assertThat(config.patches.map { it.id }).containsExactly("llm-pi-ai", "terminal-bash")
+                assertThat(config.patchFiles.map { it.fileName.toString() }).containsExactly("custom.json")
+            }
+    }
+
+    @Test
+    fun userSuppliedOpenAiModelsNeverBorrowHalfOfAConnection() {
+        val endpointOnly = OpenAiChatOptions.builder().model("gpt-4o-mini")
+            .baseUrl("http://localhost:19003/v1").build()
+        val keyOnly = OpenAiChatOptions.builder().model("gpt-4o-mini").apiKey("explicit-key").build()
+        for (options in listOf(endpointOnly, keyOnly)) {
+            val model = OpenAiChatModel.builder().options(options)
+                .openAiClient(opaqueClient(OpenAIClient::class.java))
+                .openAiClientAsync(opaqueClient(OpenAIClientAsync::class.java))
+                .build()
+            runner.withBean("openAiChatModel", ChatModel::class.java, { model })
+                .withPropertyValues("spring.ai.openai.api-key=global-key", "spring.ai.openai.base-url=http://localhost:19004/v1")
+                .run { context ->
+                    val config = context.getBean(HarnessConfig::class.java)
+                    assertThat(config.provider).isEqualTo("deepseek-official")
+                    assertThat(config.environment).isEmpty()
+                    assertThat(config.patches).isEmpty()
+                }
+        }
+    }
+
+    private fun <T> opaqueClient(type: Class<T>): T = type.cast(
+        Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, _, _ ->
+            error("Extraction must never call the opaque HTTP client")
+        },
+    )
 
     @Test
     fun ambiguousModelsKeepNativeDefaultsAndPrimarySelectsTheIntendedBean() {

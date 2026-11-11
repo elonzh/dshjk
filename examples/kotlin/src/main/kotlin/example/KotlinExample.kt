@@ -34,7 +34,7 @@ fun main(args: Array<String>) = runBlocking {
             }
         }
         try {
-            val result = session.run(args[0])
+            val result = session.runStreaming(args[0])
             closing = true
             harness.closeAsync()
             collector.join() // Drain buffered output before finishing the example.
