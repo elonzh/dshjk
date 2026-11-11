@@ -1,76 +1,78 @@
-# SDK 使用与架构
+# SDK usage and architecture
 
-## 边界与依赖
+**English** | [中文](sdk.zh.md)
 
-`libs/dshjk` 是 JVM SDK，供 Kotlin 和 Java 应用使用。`libs/dshjk-spring-boot-starter` 提供可选的 Spring 集成。添加依赖见 [README](../README.md#添加依赖)，Spring 配置与工具接入见 [Spring 集成文档](spring.md)。
+## Boundaries and dependencies
+
+`libs/dshjk` is the JVM SDK for Kotlin and Java applications. `libs/dshjk-spring-boot-starter` provides optional Spring integration. See the [README](../README.md#add-the-dependency) to add the dependency and the [Spring integration guide](spring.md) to configure Spring and connect its tools.
 
 ```mermaid
 flowchart LR
-  Application[Java / Kotlin 应用] --> Session[DeepSeekHarness / HarnessSession]
+  Application[Java / Kotlin application] --> Session[DeepSeekHarness / HarnessSession]
   Session --> Client[HarnessClient]
-  Client --> Transport[内部 RuntimeConnection]
-  Transport -->|双向 JSONL RPC / stdio| Runtime[原生 dsh profile]
-  Runtime --> Plugins[Cordis plugins / MCP / 模型]
-  Runtime --> Home[原生 home 发现 / 持久化]
+  Client --> Transport[Internal RuntimeConnection]
+  Transport -->|Bidirectional JSONL RPC over stdio| Runtime[Native dsh profile]
+  Runtime --> Plugins[Cordis plugins / MCP / models]
+  Runtime --> Home[Native home discovery / persistence]
   Client --> Protocol[protocol / configuration / error]
 ```
 
-`protocol` 定义 wire 模型和边界解析；`configuration` 定义启动参数；`client/internal` 独占进程、stdio、RPC 关联、回调与事件分发。`HarnessClient` 暴露协议操作，`DeepSeekHarness` 负责一次初始化，`HarnessSession` 负责输入活动的收集。两种语言共享这些类型和实现；Java 阻塞入口委托 suspend 方法，使用 `@JvmSynthetic` 隐藏 Continuation 签名。
+`protocol` defines the wire models and parses incoming data. `configuration` defines the startup options. `client/internal` owns the process, stdio, RPC correlation, callbacks, and event dispatch. `HarnessClient` exposes the protocol operations, `DeepSeekHarness` manages initialization, and `HarnessSession` collects the activity associated with an input. Both languages share these types and implementations. The Java blocking methods delegate to suspending methods whose `Continuation` signatures are hidden from Java with `@JvmSynthetic`.
 
-一个 Harness 对应一个子进程，可管理多个 Session。运行时拥有 Agent loop、Session history、模型路由、工具、审批策略、工作目录、goal/plan 状态及持久化；SDK 仅保存初始化状态、RPC 等待项、Session 句柄和通知订阅。`DeepSeekHarness()` 可直接使用默认配置。`session()` 是惰性句柄，自动生成官方 SDK 格式的 `session-<32 位十六进制 UUID>`；相同句柄上的多次输入继续同一会话。`run(input)` 每次创建新会话，显式 `session(id)` 则使用调用者提供的 ID。SDK 协议要求请求携带 ID，自动生成逻辑集中在创建句柄时，与官方客户端一致。
+Each harness owns one child process and can manage multiple sessions. The runtime owns the agent loop, session history, model routing, tools, approval policies, working directories, goals and plans, and persistence. The SDK tracks initialization, pending RPCs, session handles, and notification subscriptions. `DeepSeekHarness()` works with the default configuration. `session()` creates a lazy handle and generates an ID in the official SDK format: `session-` followed by 32 hexadecimal UUID digits. Reusing the handle continues the same session. `run(input)` creates a new session each time; `session(id)` uses the ID supplied by the caller. The protocol requires an ID in each session request, so the SDK generates it when it creates the handle, as the official client does.
 
-## 完整 SDK 操作
+## SDK operations
 
-| 原生请求 | Java/Kotlin 同一 API | 返回/语义 |
+| Native request | Shared Java and Kotlin API | Result or behavior |
 | --- | --- | --- |
-| `initialize` | `HarnessClient.initialize` | `InitializeResult`，校验 server identity |
-| `session/prompt` | `prompt` | `PromptReceipt`，直接入队，绕过命令路由 |
-| `session/query` | `query` | `QueryResult.Prompt` 或 `QueryResult.Command` |
-| `session/resume` | `resumeSession` | 恢复已持久化会话，无新输入 |
-| `session/wait` | `waitForSession` | 等待已拥有会话及其受管理后代 |
-| `session/working-directory/get` | `getWorkingDirectory` | 当前有效绝对目录 |
-| `session/working-directory/set` | `setWorkingDirectory` | 改变当前目录，返回有效目录 |
-| `shutdown` | `shutdown` | 协议关闭；`close` 还会回收进程 |
+| `initialize` | `HarnessClient.initialize` | Returns `InitializeResult` and checks the server identity |
+| `session/prompt` | `prompt` | Returns a `PromptReceipt`; queues input directly, bypassing command routing |
+| `session/query` | `query` | Returns `QueryResult.Prompt` or `QueryResult.Command` |
+| `session/resume` | `resumeSession` | Restores a persisted session without sending new input |
+| `session/wait` | `waitForSession` | Waits for the owned session and its managed descendants |
+| `session/working-directory/get` | `getWorkingDirectory` | Returns the effective absolute working directory |
+| `session/working-directory/set` | `setWorkingDirectory` | Changes the working directory and returns the effective path |
+| `shutdown` | `shutdown` | Shuts down the protocol; `close` also reclaims the process |
 
-低层请求前须初始化。高层 `DeepSeekHarness.start()` 在首次调用时自动完成初始化，并发调用共享一次握手；失败时关闭进程并将实例置为终态，修正配置后创建新实例。关闭可以打断仍在等待的握手。库不会自动重试已发出的输入。
+Initialize the client before sending low-level requests. The high-level API starts and initializes the runtime on first use via `DeepSeekHarness.start()`. Concurrent callers share one handshake. If initialization fails, the SDK closes the process and leaves the instance in a terminal state. Correct the configuration and create a new instance. Closing can interrupt a pending handshake. The SDK does not retry submitted inputs automatically.
 
-`HarnessClient.request(SdkRequestMethod, ...)` 提供内置方法名的类型化入口；字符串重载可调用 profile 新增的方法，使用 `JsonObject` / `JsonElement` 保留扩展载荷。`RpcException` 保留远端 `code`、message、data；`ProtocolException` 表示收到的已知字段不符合协议；`RequestTimeoutException` 表示本地等待超时；`TransportClosedException` 带 profile、进程状态及最多 64 KiB stderr 尾部。
+`HarnessClient.request(SdkRequestMethod, ...)` provides typed names for built-in methods. The string overload calls methods added by a profile and uses `JsonObject` and `JsonElement` for extension payloads. `RpcException` preserves the remote `code`, message, and data. `ProtocolException` indicates an invalid known protocol field. `RequestTimeoutException` means a local wait timed out. `TransportClosedException` includes the profile, process status, and up to 64 KiB from the end of stderr.
 
-## 输入、回执与完成
+## Input, receipts, and completion
 
-`session.run(text)` 或 `session.run(List<ContentBlock>)` 将输入交给原生 `session/query`，不在 JVM 重写命令语法。文本、reasoning、编码图片、持久化图片/文件引用、tool-call、tool-addition、tool-removal 均有类型；插件新增块可用 `ContentBlock.Extension`。图片使用 base64 和受支持的 MIME，实际内容校验与持久化由运行时完成，模型必须支持图片。
+`session.run(text)` and `session.run(List<ContentBlock>)` send input through native `session/query`, which parses the command syntax. The SDK provides types for text, reasoning, encoded images, persisted image and file references, tool calls, tool additions, and tool removals. Plugins can add blocks through `ContentBlock.Extension`. Send images as base64 with a supported MIME type and use a model that accepts images. The runtime validates and persists the image content.
 
 ```kotlin
 val input = listOf(
-    ContentBlock.Text("分析这张图"),
+    ContentBlock.Text("Analyze this image"),
     ContentBlock.EncodedImage(base64, ImageMediaType.IMAGE_PNG, "screenshot.png"),
 )
 val result = session.run(input)
 ```
 
-普通输入的 `messageId` 只是持久化入队回执。`run` 在发请求前订阅，忽略该 message 的 `agent/inbox/spliced` 之前的通知，之后持续收到根 Session 与已知后代通知，直到根 Agent `idle`。结果中 `events` 只含根 Session，子 Agent 的文本不会覆盖根回复。`finalResponse` 是最后一条根 assistant message 中 text 的拼接；`finishReason` 使用 `FinishReason` 表达最后一条 `turn/end.reason.kind`，例如 `FinishReason.Builtin.COMPLETED`。
+For ordinary input, `messageId` acknowledges that the input was persisted and queued. `run` subscribes before sending the request and ignores notifications preceding that message's `agent/inbox/spliced` event. It then receives notifications from the root session and known descendants until the root agent goes `idle`. The result's `events` list contains only root session events, so subagent text cannot replace the root response. `finalResponse` joins the text blocks of the root session's last assistant message. `finishReason` represents the last `turn/end.reason.kind` as a `FinishReason`, such as `FinishReason.Builtin.COMPLETED`.
 
-原生命令按 `commandId` 关联 `command/run`、`command/done` 与 `session.query.completed`。`run` 等待命令活动结束而非单独等待 idle，因而适用于无模型活动的 `/permission`、`/compact`，以及可启动后续活动的 `/plan`、`/goal`。缺失配对生命周期事件会抛协议错误；原生命令拒绝通过结果返回。具体命令是否可用由 profile 决定。
+The SDK correlates `command/run`, `command/done`, and `session.query.completed` by `commandId`. For native commands, `run` waits for the command activity to end. This works with commands that need no model activity, such as `/permission` and `/compact`, and commands that can start further activity, such as `/plan` and `/goal`. Missing lifecycle events raise a protocol error. If the runtime rejects a command, the result reports the rejection. The profile determines which commands are available.
 
-多个 Session 或同 Session 的输入可以重叠；每次调用持有独立订阅，不会竞争消费同一队列。普通输入的活动区间可能包含同 Session 的重叠工作，与官方 SDK 一致。observer 按接收顺序同步执行；其异常结束本次收集并释放订阅，不撤销已提交给运行时的工作。
+Inputs to different sessions or to the same session can overlap. Each call has its own subscription, so it does not compete with other calls for items in a shared queue. An ordinary input's activity window can include overlapping work in the same session, as in the official SDK. The observer runs synchronously in notification order. If it throws, collection ends and the subscription is released; work already submitted to the runtime continues.
 
-需要逐条处理事件并返回最终结果时，Kotlin 和 Java 都可以使用 `runStreaming(input, observer)`。它返回 `RunSummary`，包含 Session ID、最终文本和结束原因。需要在运行结束后访问本次事件和通知时，使用返回 `RunResult` 的 `run()`。
+Use `runStreaming(input, observer)` in Kotlin or Java to process events individually and get a `RunSummary` containing the session ID, final text, and finish reason. Use `run()` to get a `RunResult` that also retains the events and notifications from the run.
 
-## 事件订阅
+## Event subscriptions
 
-原生 SDK 推送已记录的 `session.event` 和状态通知，assistant 文本随每个模型步骤结算后的 `assistant/message` 到达。`AssistantMessage.stream` 是该次模型尝试的历史分块记录，不能据此宣称接收到了生成过程中的实时 token delta。消费方应在事件到达时输出该条消息的文本，并同时处理工具调用、工具结果和状态变化。
+The native SDK emits recorded `session.event` events and status notifications. Assistant text arrives in an `assistant/message` event after each model step finishes. `AssistantMessage.stream` records chunks from that model attempt; it does not deliver live token deltas. Print or display each message as it arrives and handle tool calls, tool results, and status changes alongside it.
 
-可运行的 [Kotlin Flow 示例](../examples/kotlin/src/main/kotlin/example/KotlinExample.kt) 和 [Java JDK Publisher 示例](../examples/java/src/main/java/example/JavaExample.java) 都先创建独立订阅，再开始 `runStreaming()`。主 Session 文本输出到 stdout，工具、命令、子 Agent、状态和结束原因输出到 stderr。命令有文本结果时也写入 stdout。输入结束后关闭运行时，等待已收到的事件排空，再释放订阅；正常关闭导致的 `TransportClosedException` 在示例中作为结束信号，其他订阅错误继续向调用者传播。结果文本已由事件处理器输出，因此不会再次打印 `finalResponse`。
+The runnable [Kotlin Flow example](../examples/kotlin/src/main/kotlin/example/KotlinExample.kt) and [Java JDK Publisher example](../examples/java/src/main/java/example/JavaExample.java) subscribe before starting `runStreaming()`. They print root session text and any command output to stdout, and tool, command, subagent, status, and finish details to stderr. Once the input finishes, they close the runtime, drain the notifications already received, and release the subscription. The examples treat `TransportClosedException` during normal shutdown as the end of the stream and propagate other subscription errors. The event handler has already printed the text, so the examples do not print `finalResponse` again.
 
-六个已知 SDK 通知都有独立类型：`Event`、`Status`、`QueryCompleted`、`SubagentStarted`、`SubagentFinished`、`QuestionCancelled`。`method` 使用 `NotificationMethod`；内置方法是 `NotificationMethod.Builtin` 枚举，新增通知使用 `Extension`，所有通知保留原始 params。
+Each of the six known SDK notifications has its own type: `Event`, `Status`, `QueryCompleted`, `SubagentStarted`, `SubagentFinished`, and `QuestionCancelled`. The `method` field uses `NotificationMethod`. Known methods are `NotificationMethod.Builtin` enum values; new methods use `Extension`. Every notification retains its original params.
 
-`SessionEvent.type` 使用 `SessionEventType`，当前基线的 63 个内置名称集中定义在 `SessionEventType.Builtin`；`data` 使用 sealed 接口 `SessionEventData`，每个内置事件对应具体数据类。turn/step、消息与流、工具调用、命令、审批、compaction、goal、todo、job、team 等都可直接读取类型化字段。`seq`、`time` 是经过校验的整数；完整原生 envelope（含 surface metadata 和未知字段）仍保留在 `raw` 中。
+`SessionEvent.type` uses `SessionEventType`, with all 63 event names from the supported baseline defined in `SessionEventType.Builtin`. The sealed `SessionEventData` interface has a data class for each built-in event. Typed fields cover turns and steps, messages and streams, tool calls, commands, approvals, compaction, goals, todos, jobs, and teams. `seq` and `time` are validated integers. `raw` retains the full native envelope, including surface metadata and unknown fields.
 
-固定状态使用枚举，例如 `AgentStatus`、`RunStatus`、`CommandStatus`、`TodoStatus`、`JobStatus`、`GoalPhase`、`ImageMediaType`。`TurnEndReason` 和 `QuestionIntent` 使用带载荷的 sealed 类型，例如 `TurnEndReason.Aborted` 携带 `AbortReason`，`TurnEndReason.Error` 携带 `LlmFailure`，`QuestionIntent.PlanReview` 携带批准选项与调用标识。图片和文件引用分别使用 `ImageAttachment`、`FileAttachment`。
+Fixed sets of values use enums such as `AgentStatus`, `RunStatus`, `CommandStatus`, `TodoStatus`, `JobStatus`, `GoalPhase`, and `ImageMediaType`. `TurnEndReason` and `QuestionIntent` use sealed types with payloads: `TurnEndReason.Aborted` carries an `AbortReason`, `TurnEndReason.Error` carries an `LlmFailure`, and `QuestionIntent.PlanReview` carries approval options and a call ID. Image and file references use `ImageAttachment` and `FileAttachment`.
 
-原生允许扩展的事件名称、通知方法、结束原因与内容块类型采用“内置枚举 + Extension”的开放类型。未知值保留原始名称和 JSON；已知类型缺字段或状态值非法时抛 `ProtocolException`，不会降级成扩展类型。可用 `.wireName` 获取精确协议拼写。工具参数、JSON Schema、provider replay state 和插件自有消息来源等原本开放的元数据继续使用 JSON。
+Event names, notification methods, finish reasons, and content block types that the runtime allows plugins to extend use built-in enums plus an `Extension` type. Unknown values retain their original name and JSON. Invalid or missing fields on known types raise `ProtocolException`. Use `.wireName` to get the exact protocol spelling. Open-ended metadata such as tool arguments, JSON Schema, provider replay state, and plugin-specific message sources remains JSON.
 
-Kotlin 可直接按载荷类型分支：
+In Kotlin, branch on the payload type:
 
 ```kotlin
 when (val data = event.data) {
@@ -81,36 +83,36 @@ when (val data = event.data) {
 }
 ```
 
-Java 17 可用 `event.getData() instanceof SessionEventData.ToolCalled call`，然后读取 `call.getName()`；固定状态直接与枚举值比较。插件事件可通过 `SessionEventData.Extension` 读取原始值，或用 `decodeData(serializer)` 解码成插件自有类型。SDK 不重建或迁移原生会话日志。
+In Java 17, use `event.getData() instanceof SessionEventData.ToolCalled call` and read `call.getName()`. Compare fixed statuses directly with enum values. For plugin events, read the original value through `SessionEventData.Extension` or use `decodeData(serializer)` to decode it into a plugin-specific type. The SDK leaves native session logs in their original format.
 
-订阅创建时即注册，每个订阅有独立缓冲，默认 8192 条；溢出仅使该订阅抛 `SlowConsumerException`，不堵塞协议读取。进程结束时先允许消费已收到的通知，再抛终态错误；显式关闭订阅丢弃队列。`next(Duration)` 的超时只影响一次等待，订阅仍可继续消费。
+A subscription registers when created and has its own buffer, which defaults to 8,192 items. Overflow raises `SlowConsumerException` only on that subscription and does not block protocol reads. If the process exits, the subscription delivers buffered notifications before reporting the terminal error. Closing a subscription discards its queue. A `next(Duration)` timeout ends just that wait; the subscription remains usable.
 
-Kotlin：
+In Kotlin:
 
 ```kotlin
-val subscription = harness.client.subscribe(session.id) // 根会话及已发现后代
+val subscription = harness.client.subscribe(session.id) // Root session and known descendants
 try {
-    subscription.events.collect { notification -> /* 更新 UI */ }
+    subscription.events.collect { notification -> /* Update the UI */ }
 } finally {
     subscription.close()
 }
 ```
 
-生产应用应在另一个协程启动输入，持续消费订阅。高层 `run` 的逐条反馈也可直接传 `NotificationObserver`。
+In a production application, start the input in a separate coroutine and keep consuming the subscription. For feedback on a single high-level `run` call, pass a `NotificationObserver` directly.
 
-Java：先创建 `NotificationSubscription`，再调用 `subscription.events().subscribe(Flow.Subscriber)`，按 JDK Publisher 的 demand 协议消费；`next()` 则是阻塞入口。一个订阅对应一个消费者；需要多个消费者时创建多个订阅。取消 Publisher 订阅会取消其等待，拥有者仍应关闭 `NotificationSubscription`。
+In Java, create a `NotificationSubscription` and call `subscription.events().subscribe(Flow.Subscriber)` to consume events with JDK Publisher backpressure. Use `next()` for blocking reads. Each subscription serves one consumer; create a separate subscription for each additional consumer. Cancelling the Publisher subscription cancels its wait. The owner should still close the `NotificationSubscription`.
 
-Session tree 依据 `subagent.started` 维护，包含创建前已发现的后代，按生命周期清理整个进程的关系表。远程 Agent 没有上游通知时，SDK 不推断其生命周期。
+The SDK tracks the session tree through `subagent.started`, including descendants discovered before a subscription was created. It clears the process-wide session tree during shutdown. It cannot infer the lifecycle of remote agents that emit no upstream notifications.
 
-## 审批与用户问题
+## Approvals and user questions
 
-构造配置时安装回调；高层初始化自动声明对应 capability，直接使用低层 initialize 时由调用者显式声明。未安装时不抢占原生 answerer chain。SDK 不默认选择答案。
+Install callbacks when building the configuration. High-level initialization advertises their capabilities automatically; callers using low-level `initialize` must declare them explicitly. Without a callback, the native answerer chain stays in control. The SDK does not select answers on its own.
 
 ```kotlin
 val config = HarnessConfig(
     dshHome = home,
     approvalHandler = ApprovalHandler { request, cancellation ->
-        // 在业务 UI 中展示 request.toolName / reason；仅显式允许时返回 ALLOWED_ONCE
+        // Show request.toolName and reason in your UI; return ALLOWED_ONCE only after explicit approval
         ApprovalResult(ApprovalOutcome.REJECTED)
     },
     userQuestionHandler = UserQuestionHandler { request, cancellation ->
@@ -119,42 +121,42 @@ val config = HarnessConfig(
 )
 ```
 
-Java 使用 builder 的同名方法和相同 SAM 接口。`approval/request` 返回 `ALLOWED_ONCE`、`REJECTED`、`CANCELLED`，一次允许不持久化授权。`user-question/ask` 返回 `Answer` 或 `UserQuestionResult.Cancelled`（Java 使用 `INSTANCE`）；每个原问题 id 必须且只能回答一次。取消不代表批准。
+In Java, use the builder methods of the same names and the same functional interfaces. `approval/request` returns `ALLOWED_ONCE`, `REJECTED`, or `CANCELLED`. A one-time approval does not persist permission. `user-question/ask` returns `Answer` or `UserQuestionResult.Cancelled` (use `INSTANCE` in Java). Answer each original question ID exactly once. Cancellation does not grant approval.
 
-回调在独立 IO 工作线程运行，可以嵌套请求 SDK；协议读取线程不会等待 UI。回调可并发。收到 `user-question.cancelled` 或连接关闭时，`CancellationToken.isCancelled` 置位并中断回调线程；宿主应及时释放自己的 UI/等待资源。回调异常返回 RPC error，取消后的答案不会用于后续运行。忽略中断的宿主代码可能继续执行，SDK 不等待这类代码无限期退出。
+Callbacks can run concurrently on separate I/O threads and can make nested SDK requests. The thread reading the protocol does not wait for the UI. On `user-question.cancelled` or connection close, the SDK sets `CancellationToken.isCancelled` and interrupts the callback thread. The host should release any UI or resources associated with the wait promptly. A callback exception returns an RPC error. The runtime does not use answers submitted after cancellation. Host code that ignores interruptions may continue running; shutdown does not wait indefinitely for it.
 
-## 配置与资源生命周期
+## Configuration and lifecycle
 
-| 配置 | 默认值/用途 |
+| Setting | Default or purpose |
 | --- | --- |
-| `dshHome` | 可选；省略时由原生运行时按 `DSH_HOME` → `~/.dsh` 发现，显式值优先 |
-| `runtime` | 显式命令优先；省略时查找[随包运行时](../README.md#随应用交付-dsh)，然后使用 PATH 上的 `dsh` |
-| `profile` | `sdk`，原生运行时组合 |
-| `patches` / `patchFiles` | 空 / 空；内联数据类操作与随后应用的原始 patch 文件 |
-| `cwd` / `processCwd` | JVM 当前目录 / cwd；分别表示 Agent workspace 与子进程目录 |
-| `environment` / `inheritEnvironment` | 空 / true；覆盖继承环境，false 表示完整替换；仅显式设置 `dshHome` 时覆盖子进程的 `DSH_HOME` |
+| `dshHome` | Optional; an explicit value takes precedence, otherwise the runtime checks `DSH_HOME` and then `~/.dsh` |
+| `runtime` | Explicit command first, then the [bundled runtime](../README.md#bundle-dsh-with-your-application), then `dsh` on PATH |
+| `profile` | `sdk`, the native runtime composition |
+| `patches` / `patchFiles` | Both empty; inline typed operations followed by raw patch files |
+| `cwd` / `processCwd` | The JVM working directory / `cwd`; the agent workspace and child process directory, respectively |
+| `environment` / `inheritEnvironment` | Empty / true; overrides the inherited environment, or replaces it entirely when inheritance is disabled. An explicit `dshHome` overrides the child's `DSH_HOME` |
 | `provider` / `model` | `deepseek-official` / `deepseek-v4-flash` |
-| `reasoningEffort` / `maxTokens` | 留空，使用适配器默认；配置时必须非空/正整数 |
-| `initializeTimeout` | 30 秒，等待首次 profile 握手 |
-| `requestTimeout` | 默认无界。配置后限制等待发送和接收 RPC 应答的时间，后续 Agent 活动有独立生命周期 |
-| `shutdownTimeout` / `eofGrace` / `terminateGrace` | 1 / 6 / 3 秒 |
-| `notificationBufferCapacity` | 8192，每个订阅独立 |
+| `reasoningEffort` / `maxTokens` | Unset to use adapter defaults; when set, provide a nonblank value and a positive integer, respectively |
+| `initializeTimeout` | 30 seconds for the initial profile handshake |
+| `requestTimeout` | Unbounded by default. Limits the time to send the RPC and receive its response; later agent activity has its own lifecycle |
+| `shutdownTimeout` / `eofGrace` / `terminateGrace` | 1 / 6 / 3 seconds |
+| `notificationBufferCapacity` | 8,192 items per subscription |
 
-超时统一使用 `java.time.Duration`。Kotlin 可写 `HarnessConfig(requestTimeout = Duration.ofSeconds(45))`，Java 可写 `HarnessConfig.builder().requestTimeout(Duration.ofSeconds(45)).build()`。
+All timeouts use `java.time.Duration`. Use `HarnessConfig(requestTimeout = Duration.ofSeconds(45))` in Kotlin or `HarnessConfig.builder().requestTimeout(Duration.ofSeconds(45)).build()` in Java.
 
-配置通过可省略的 `HarnessConfig()` 或 Java `HarnessConfig.builder()` 创建，集合在边界复制为不可修改值，内联 patch 的 JSON 在构造配置时形成快照。省略 `dshHome` 时，SDK 保留子进程环境，由运行时解析 home，包括空白环境值回退和 `~` 展开；SDK 不在 JVM 内复制发现算法。启动参数按 argv 传递，不经 shell 解释；`RuntimeCommand.of` 支持显式 launcher 前缀，例如自定义 Node loader。SDK 不修改宿主全局环境。
+Build the configuration with `HarnessConfig()` or Java's `HarnessConfig.builder()`; all settings are optional. The SDK makes immutable copies of collections and snapshots inline patch JSON when building the configuration. If `dshHome` is unset, the SDK preserves the child process environment and lets the runtime resolve its home, including handling blank variables and expanding `~`. Arguments are passed directly as argv without shell interpretation. Use `RuntimeCommand.of` for an explicit launcher prefix, such as a custom Node loader. The SDK does not modify the host environment.
 
-Kotlin 用 `closeAsync()`，Java 用 try-with-resources 的 `close()`；两者执行同一关闭实现。关闭先停止宿主回调，在时限内尝试发送 shutdown 并等待 stdin EOF 清理。随后直接向根运行时进程发送终止信号，必要时强制终止，并确认进程已退出。关闭幂等且终态，不能重新启动。Kotlin 的关闭使用 NonCancellable 以完成资源回收。
+Kotlin's `closeAsync()` and Java's `close()` (including try-with-resources) use the same shutdown implementation. It stops host callbacks, then tries to send `shutdown` and allows the runtime to clean up after stdin reaches EOF, within the configured time limits. If needed, it signals the root runtime process directly, escalates to forcible termination, and confirms the process has exited. Closing is idempotent and terminal. Kotlin shutdown runs in `NonCancellable` to finish releasing resources.
 
-本地请求超时或协程取消会撤回尚未开始的发送，移除等待项并忽略迟到响应。已开始写入的请求仍可能由运行时执行。要中止整个运行时须关闭其拥有者。SDK 不加入无依据的 Session abort 方法。
+A local request timeout or coroutine cancellation withdraws any send that has not started, removes the pending request, and ignores late responses. The runtime can still execute a request once writing has started. Close the owner to stop the entire runtime. The SDK exposes no session abort operation.
 
-`resumeSession(id)` 必须使用原来的 home；找不到、占用或不兼容的历史由原生报错，不创建替代会话。恢复不等于恢复旧 shell/browser 进程。`get/setWorkingDirectory` 可惰性创建 Session，相对目录由该 Session 当前目录解析，设置不改变原始目录元数据、权限或已有外部进程。
+Use the original home with `resumeSession(id)`. The runtime reports missing, locked, or incompatible history rather than creating a replacement session. Resuming does not restore previous shell or browser processes. The working directory operations can create a session lazily. Relative paths resolve against the session's current directory. Setting it leaves the original directory metadata, permissions, and existing external processes unchanged.
 
-## 数据类 patch 与供应商配置
+## Typed patches and provider configuration
 
-`HarnessPatch` 表示一条原生 Cordis 操作：`id + config` 替换已有条目的完整配置，`id + disabled` 切换状态，`insert` 插入 `HarnessPlugin`；带 `id` 的插入以该条目作为目标 group。`name` 是已有条目的名称匹配条件。插件配置使用 JSON 值的 Map，插件扩展仍可定义自己的字段。
+A `HarnessPatch` describes one native Cordis operation: `id + config` replaces the entire configuration of an existing entry, `id + disabled` changes its enabled state, and `insert` inserts `HarnessPlugin` entries. With an `id`, insertion targets that group. `name` is a match criterion for an existing entry. Plugin configuration is a map of JSON values, so plugins can define their own fields.
 
-供应商有类型化的 `LlmProviderConfig`、`LlmModelConfig` 和 `LlmApi`，不需要手写 YAML 或临时文件：
+Use the typed `LlmProviderConfig`, `LlmModelConfig`, and `LlmApi` to configure a provider directly in code:
 
 ```kotlin
 val config = HarnessConfig(
@@ -172,9 +174,9 @@ val config = HarnessConfig(
 )
 ```
 
-容量与模型 ID 按供应商实际值填写。`apiKeyEnv` 引用子进程环境或原生凭据存储中的键；密钥值不放入 provider patch。协议枚举还支持 `OPENAI_RESPONSES` 与 `ANTHROPIC_MESSAGES`。默认 `sdk` 已有 `llm-pi-ai` 条目；`sdk-minimal` 需要 `HarnessPatch.providers(..., insertAdapter = true)` 插入适配器。自定义 profile 需按自身组合选择覆盖或插入。
+Use the model ID and limits supplied by your provider. `apiKeyEnv` names a key in the child process environment or native credential store; keep the secret value out of the provider patch. `LlmApi` also supports `OPENAI_RESPONSES` and `ANTHROPIC_MESSAGES`. The default `sdk` profile already contains an `llm-pi-ai` entry. For `sdk-minimal`, use `HarnessPatch.providers(..., insertAdapter = true)` to insert the adapter. For a custom profile, choose replacement or insertion based on its composition.
 
-MCP 使用同一入口，连接由原生客户端管理：
+Configure MCP through the same API. The native client manages the connection:
 
 ```kotlin
 val patch = HarnessPatch.mcpServers(mapOf(
@@ -183,7 +185,7 @@ val patch = HarnessPatch.mcpServers(mapOf(
 val config = HarnessConfig(patches = listOf(patch))
 ```
 
-其他插件可以直接使用数据类：
+For other plugins, use the data classes directly:
 
 ```kotlin
 HarnessPatch(id = "terminal-bash", disabled = true)
@@ -194,14 +196,16 @@ HarnessPatch(insert = listOf(HarnessPlugin(
 )))
 ```
 
-Java 使用相同数据类构造器、`HarnessPatch.providers(...)` / `mcpServers(...)` 和 builder 的 `patches(...)`。
+In Java, use the same constructors, `HarnessPatch.providers(...)`, `HarnessPatch.mcpServers(...)`, and the builder's `patches(...)` method.
 
-已有 YAML/JSON 文件使用 `HarnessConfig(patchFiles = listOf(Path.of("tools.patch.yml")))` 或 `builder.patchFiles(...)`。SDK 首次启动子进程时才把全部内联操作写入一个私有临时目录中的 JSON 文件，之后依次传递 `patchFiles`，所以原始文件可覆盖内联配置。启动失败会清理生成文件；正常关闭、初始化失败或异常退出后的 `close()` 在确认子进程退出后清理它们。用户文件由调用者维护。每个客户端独立拥有生成文件，创建配置或 Spring 容器不会创建这些文件。
+For existing YAML or JSON files, use `HarnessConfig(patchFiles = listOf(Path.of("tools.patch.yml")))` or `builder.patchFiles(...)`. On first process launch, the SDK writes the inline operations to one JSON file in a private temporary directory, then passes the files from `patchFiles` in order. This lets those files override inline operations. The SDK cleans up generated files if launch fails and after the child process has exited during shutdown, including when initialization fails or `close()` follows an unexpected exit. The caller owns user-supplied files. Each client owns its generated files; building a config or starting the Spring context does not generate them.
 
-持久化工具与 MCP 配置归 profile；调用级 patch 在本客户端下次启动时生效。配置覆盖采用原生的完整替换规则，覆盖 `llm-pi-ai` 时要提供希望保留的全部 providers。
+Keep persistent tool and MCP configuration in the profile. Patches supplied in a client's configuration take effect on its next launch. The runtime replaces the entire configuration of an overridden entry, so include every provider you want to keep when overriding `llm-pi-ai`.
 
-## 兼容与验证边界
+## Compatibility and verification
 
-协议基线：上游 checkout `fcc0ad4621`，公开 npm CLI `@deepseek-ai/dsh@0.2.2-rc.1`。权威协议是上游 `packages/sdk/protocol/src/types.ts`；SDK 高层活动算法对齐该版本 TS/Python SDK。库不强制所有未来运行时与基线版本相等，但只宣称对基线完成验证。
+The protocol baseline is upstream commit `fcc0ad4621` and the public npm CLI `@deepseek-ai/dsh@0.2.2-rc.1`. The upstream `packages/sdk/protocol/src/types.ts` defines the wire contract, and the high-level activity handling follows the TypeScript and Python SDKs from that version. The library does not require an exact runtime version match; verification covers this baseline.
 
-本地验证覆盖 JDK 17/21、Java/Kotlin 消费、双向 RPC、Unicode、命令关联、并发 Session、独立订阅与溢出、回调嵌套请求、取消与超时、stderr、握手失败/异常退出/强制回收。未经修改的真实 CLI 配合本地 Messages HTTP 夹具，覆盖 sdk-minimal 的模型请求/并发/自动 Session ID 与恢复/工作目录/home 默认发现与配置优先级，以及完整 sdk 的 permission/compact/max-tokens/用户问题。CI 配置覆盖 Linux/macOS/Windows；本机执行只代表 macOS，真实云模型、Windows/Linux 平台、图片入库与具体外部工具仍需相应环境验证。Spring 集成的真实 MCP 与 OpenAI 兼容端点验证见 [Spring 文档](spring.md)。
+Local tests cover JDK 17 and 21, Java and Kotlin consumers, bidirectional RPC, Unicode, command correlation, concurrent sessions, independent subscriptions and overflow, nested requests from callbacks, cancellation and timeouts, stderr, handshake failures, unexpected exits, and forced termination. Tests with the unmodified CLI and a local Messages HTTP fixture cover model requests, concurrency, automatic session IDs and recovery, working directories, home discovery, and configuration precedence under `sdk-minimal`. They also exercise permissions, compaction, token limits, and user questions under `sdk`.
+
+SDK build CI uses JDK 17 and 21 on Linux. A separate runtime packaging workflow targets Linux, macOS, and Windows. Local runs cover macOS. Cloud model endpoints, Windows and Linux runtime behavior, image persistence, and specific external tools still need verification in their respective environments. See the [Spring guide](spring.md) for integration tests with a real MCP server and a local OpenAI-compatible endpoint.

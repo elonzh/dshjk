@@ -1,30 +1,32 @@
-# Spring Boot 4 与 Spring AI
+# Spring Boot 4 and Spring AI
 
-## 职责与依赖
+**English** | [中文](spring.zh.md)
 
-`com.elonzh:dshjk-spring-boot-starter` 是可选框架集成，依赖核心 `dshjk` 和 Spring Boot。核心 SDK 的依赖中没有 Spring。当前集成基线为 Spring Boot **4.1.2**、Spring AI **2.0.2** 和 JDK 17+；starter 的自动配置另外通过 Spring Boot **4.0.9** 回归。
+## Responsibilities and dependencies
 
-starter 和 Spring 示例均使用 Kotlin 实现，Java 应用可以直接消费同一制品。Spring 管理配置、Java/Kotlin 服务、工具实现和客户端生命周期；Harness 管理 Session、历史、模型路由、Agent 循环、工具选择、审批及持久化。Spring AI 工具使用官方 Streamable HTTP MCP Server，Harness 通过其原生 MCP client 调用这些工具。
+`com.elonzh:dshjk-spring-boot-starter` is an optional integration that depends on the core `dshjk` SDK and Spring Boot. The core SDK has no Spring dependency. The integration baseline is Spring Boot **4.1.2**, Spring AI **2.0.2**, and JDK 17+. The starter's auto-configuration is also tested against Spring Boot **4.0.9**.
+
+The starter and Spring example are written in Kotlin. Java applications can use the same artifact. Spring manages configuration, Java and Kotlin services, tool implementations, and the client lifecycle. Harness manages sessions, history, model routing, the agent loop, tool selection, approvals, and persistence. The official Spring AI Streamable HTTP MCP server exposes tools to the native Harness MCP client.
 
 ```mermaid
 flowchart LR
-    Caller[应用 / HTTP / SSE] --> SDK[Spring 管理的 DeepSeekHarness]
-    SDK -->|原生 SDK RPC| DSH[dsh Agent 运行时]
-    DSH --> Model[模型服务]
-    DSH -->|Streamable HTTP MCP| Server[Spring AI MCP Server]
+    Caller[Application / HTTP / SSE] --> SDK[Spring-managed DeepSeekHarness]
+    SDK -->|Native SDK RPC| DSH[dsh agent runtime]
+    DSH --> Model[Model service]
+    DSH -->|Streamable HTTP MCP| Server[Spring AI MCP server]
     Server --> Tools[ToolCallback / ToolCallbackProvider / @Tool]
-    Tools --> Services[Spring 服务]
+    Tools --> Services[Spring services]
 ```
 
-## 使用 starter
+## Add the starter
 
-将 `SDK_VERSION` 替换为所选 SDK 发布版本。
+Replace `SDK_VERSION` with the SDK release version you want to use.
 
 ```kotlin
 implementation("com.elonzh:dshjk-spring-boot-starter:SDK_VERSION")
 ```
 
-在已有 Spring Boot 应用中注入客户端：
+Inject the client into your Spring Boot application:
 
 ```kotlin
 @Service
@@ -33,16 +35,16 @@ class AssistantService(private val harness: DeepSeekHarness) {
 }
 ```
 
-自动配置通过 Boot 的 `AutoConfiguration.imports` 注册。默认创建 `HarnessConfig` 和 `DeepSeekHarness`，不在 Spring 容器启动时启动 CLI。首次 SDK 操作才会启动运行时；容器关闭时调用同一 SDK 的 `close()`，确认进程退出后清理生成的连接文件。
+The starter registers its auto-configuration through Boot's `AutoConfiguration.imports` and provides `HarnessConfig` and `DeepSeekHarness` beans by default. The first SDK operation starts the CLI. When the application context shuts down, it calls the SDK's `close()`, which waits for the runtime to exit before removing generated connection files.
 
-Home、Session ID、模型及其他省略项继续遵循 [SDK 默认行为](sdk.md)。`DeepSeekHarness` 是进程级单例，不要把单个 `HarnessSession` 声明成所有请求共享的默认会话。独立请求使用 `harness.run(input)`；连续对话保存 Session 句柄或已返回的 Session ID。
+Home discovery, session IDs, model routing, and other omitted settings follow the [SDK defaults](sdk.md#configuration-and-lifecycle). Use `DeepSeekHarness` as a process-wide singleton. Use `harness.run(input)` for independent requests, and keep a session handle or the returned session ID for a conversation that spans requests.
 
-### 配置
+### Configuration
 
 ```yaml
 dshjk:
   cwd: /path/to/workspace
-  # 全部可选；省略时使用核心 SDK 的默认行为。
+  # All settings are optional; omitted values follow the core SDK defaults.
   # dsh-home: /path/to/isolated-home
   # runtime:
   #   cli: /path/to/@deepseek-ai/dsh/lib/bin.js
@@ -53,28 +55,28 @@ dshjk:
   # request-timeout: 2m
 ```
 
-| 配置 | 用途 |
+| Setting | Purpose |
 | --- | --- |
-| `dshjk.enabled` | 默认 true；false 关闭自动配置 |
-| `dshjk.dsh-home` | 可选 home 覆盖；省略后原生发现 |
-| `dshjk.cwd` / `process-cwd` | Agent workspace / 运行时进程目录 |
-| `dshjk.runtime.executable` | 自定义可执行文件，与 cli 互斥 |
-| `dshjk.runtime.cli` / `runtime.node` | JavaScript CLI 模块与可选 Node 可执行文件；node 需要同时配置 cli |
-| `dshjk.profile` | 原生 profile |
-| `dshjk.patches` / `patch-files` | 内联数据类操作 / 随后应用的原始 patch 文件 |
-| `dshjk.providers` | 类型化的原生多供应商配置 |
-| `dshjk.spring-ai.enabled` | 默认 true；允许从现有 ChatModel 发现模型连接 |
-| `dshjk.provider` / `model` / `reasoning-effort` / `max-tokens` | 初始化模型路由、推理强度和输出上限 |
-| `dshjk.environment` / `inherit-environment` | 子进程环境及是否继承父进程环境 |
-| `dshjk.initialize-timeout` / `request-timeout` | 握手 / RPC 响应等待时间 |
-| `dshjk.shutdown-timeout` / `eof-grace` / `terminate-grace` | 运行时关闭阶段的等待时间 |
-| `dshjk.notification-buffer-capacity` | 每个通知订阅的缓冲容量 |
+| `dshjk.enabled` | Defaults to true; set false to disable auto-configuration |
+| `dshjk.dsh-home` | Optional home override; dsh discovers its home when omitted |
+| `dshjk.cwd` / `process-cwd` | Agent workspace / runtime process working directory |
+| `dshjk.runtime.executable` | Custom executable; mutually exclusive with `cli` |
+| `dshjk.runtime.cli` / `runtime.node` | JavaScript CLI module and optional Node executable; `node` requires `cli` |
+| `dshjk.profile` | Native profile |
+| `dshjk.patches` / `patch-files` | Inline typed operations / raw patch files applied afterward |
+| `dshjk.providers` | Typed native provider configuration |
+| `dshjk.spring-ai.enabled` | Defaults to true; enables connection discovery from existing ChatModel beans |
+| `dshjk.provider` / `model` / `reasoning-effort` / `max-tokens` | Initial model routing, reasoning effort, and output token limit |
+| `dshjk.environment` / `inherit-environment` | Child process environment and whether to inherit the parent environment |
+| `dshjk.initialize-timeout` / `request-timeout` | Time limits for the handshake and RPC responses |
+| `dshjk.shutdown-timeout` / `eof-grace` / `terminate-grace` | Time limits for runtime shutdown stages |
+| `dshjk.notification-buffer-capacity` | Buffer size per notification subscription |
 
-`HarnessProperties` 使用 Kotlin 不可变数据类，通过构造器绑定配置；配置元数据由 kapt 和 Boot 官方配置处理器生成。创建 Bean 时形成不可变的 `HarnessConfig`，修改启动配置后创建新的客户端或重启应用。
+`HarnessProperties` is an immutable Kotlin data class bound through its constructor. Kapt and the official Boot configuration processor generate its configuration metadata. Bean creation produces an immutable `HarnessConfig`. To apply startup configuration changes, create a new client or restart the application.
 
-### 供应商与内联 patch
+### Providers and inline patches
 
-已有供应商配置可以直接放进 `application.yml`：
+Put existing provider settings directly in `application.yml`:
 
 ```yaml
 dshjk:
@@ -98,15 +100,15 @@ dshjk:
   #   - /absolute/path/last.patch.yml
 ```
 
-`providers` 绑定核心 SDK 的 `LlmProviderConfig` / `LlmModelConfig`，协议是 `LlmApi` 枚举。`patches` 绑定 `HarnessPatch`，支持 `id/config/disabled/name/insert`；插入项使用 `HarnessPlugin`。任意插件的 `config` 保留 JSON Map 表达能力；常规供应商和 MCP 使用各自的数据类。[核心数据类用法与覆盖规则](sdk.md#数据类-patch-与供应商配置)集中维护在 SDK 文档。
+`providers` binds to the core SDK's `LlmProviderConfig` and `LlmModelConfig`, with `LlmApi` for the protocol. `patches` binds to `HarnessPatch` and supports `id`, `config`, `disabled`, `name`, and `insert`. Inserted entries use `HarnessPlugin`. A plugin's `config` accepts a map of JSON values. Providers and MCP connections have dedicated types. See [typed patches and provider configuration](sdk.md#typed-patches-and-provider-configuration) for examples and override rules.
 
-自动配置按 provider patch、MCP patch、应用内联 `patches` 的顺序形成操作列表，再由核心 SDK 按需生成一个启动文件。原始 `patch-files` 在这个文件之后应用，customizer 最后可以替换对应集合。默认 `sdk` 覆盖已有适配器，`sdk-minimal` 自动插入多供应商适配器；自定义 profile 需自行提供相应条目。
+Auto-configuration orders the provider patch first, then the MCP patch, then the application's inline `patches`. The core SDK writes them to one startup file on demand, and the runtime applies raw `patch-files` after that file. A customizer can replace either collection before startup. The default `sdk` profile overrides the existing adapter; `sdk-minimal` inserts the multi-provider adapter. A custom profile must supply the appropriate entry.
 
-### 从 Spring AI ChatModel 发现配置
+### Discover model settings from Spring AI ChatModel
 
-应用已有 Spring AI **2.0.2** 的 `OpenAiChatModel` 或 `AnthropicChatModel` Bean 时，starter 默认尝试复用它的模型、API 地址、静态 API key、请求头与输出 token 上限。Spring AI 及其 provider 模块都是应用可选依赖，starter 不会安装或创建 ChatModel。
+If your application already has a Spring AI **2.0.2** `OpenAiChatModel` or `AnthropicChatModel` bean, the starter tries to reuse its model, API endpoint, static API key, request headers, and output token limit. Spring AI and its provider modules are optional application dependencies. The starter does not install or create a ChatModel.
 
-例如应用已经配置了 Spring AI OpenAI starter：
+For example, an application with the Spring AI OpenAI starter might have:
 
 ```yaml
 spring:
@@ -119,17 +121,17 @@ spring:
         max-completion-tokens: 1024
 ```
 
-Spring AI 自动创建的模型沿用其工厂解析出的连接配置。手工构建的 ChatModel 使用公开 options 中同时提供的 API 地址与密钥。需要复用自定义 HTTP client 的连接时，可以通过提取器显式提供完整配置。模型请求与 Agent 循环由原生 dsh 执行。
+For models that Spring AI configures automatically, the starter reuses the connection settings resolved by the factory. For manually built models, it looks for both the API endpoint and the key in the public options. Supply a custom extractor with the full connection settings to reuse a connection from a custom HTTP client. Native dsh still runs the model requests and agent loop.
 
-- 自定义 `HarnessConfig` 或 `DeepSeekHarness` Bean 接管配置。
-- 显式 `dshjk.provider`、`model`、`providers`、针对内置模型插件的内联 patch，以及显式 `environment.DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` 优先于自动发现。
-- 工具等内联 patch 和原始 `patch-files` 可以与模型发现组合，按原生顺序应用。若原始文件自带模型路由，请同时指定 `dshjk.provider` 和 `model`，或设置 `dshjk.spring-ai.enabled: false`。
-- 多个 ChatModel 可用时使用 `@Primary` 选择。候选不唯一或没有可提取连接时，使用原生默认配置。
-- customizer 在模型发现和属性转换后执行。
+- Custom `HarnessConfig` or `DeepSeekHarness` beans take over configuration.
+- An explicit `dshjk.provider`, `model`, `providers`, inline patch targeting a built-in model plugin, or `environment.DEEPSEEK_API_KEY` or `DEEPSEEK_BASE_URL` takes precedence over discovery.
+- Inline tool patches and raw `patch-files` can be combined with model discovery and are applied in native order. If a raw file configures model routing, also set `dshjk.provider` and `model`, or disable discovery with `dshjk.spring-ai.enabled: false`.
+- If several ChatModel beans exist, use `@Primary` to select one. If there is no unique candidate or the connection cannot be extracted, the starter uses the native defaults.
+- Customizers run after model discovery and property conversion.
 
-提取结果在创建配置时形成快照。API key 通过独立的 `DSH_SPRING_AI_API_KEY_*` 环境变量交给 dsh，原生工具子进程会过滤该变量。生成的 provider patch 保存其引用名。OAuth、代理和认证请求头可通过显式连接配置或自定义提取器处理。
+The starter snapshots the extracted settings when it creates the configuration. It passes the API key to dsh in a dedicated `DSH_SPRING_AI_API_KEY_*` environment variable, which native tool subprocesses filter out. The generated provider patch stores the variable name. Use explicit connection settings or a custom extractor to handle OAuth, proxies, and authentication headers.
 
-其他 ChatModel 可注册有序 `SpringAiModelConfigurationExtractor`：
+Register an ordered `SpringAiModelConfigurationExtractor` for other ChatModel implementations:
 
 ```kotlin
 @Bean
@@ -151,13 +153,13 @@ fun customModelExtractor(): SpringAiModelConfigurationExtractor =
     }
 ```
 
-返回 null 表示此提取器不支持该实例。核心 SDK 只接收生成后的普通 `HarnessConfig`，不依赖 Spring AI。
+Return null when the extractor does not support that model instance. The core SDK receives a regular `HarnessConfig` and has no Spring AI dependency.
 
-### 应用覆盖和回调
+### Application overrides and callbacks
 
-提供自定义 `HarnessConfig` Bean 时，starter 使用该实例；提供自定义 `DeepSeekHarness` Bean 时，starter 退让，由应用定义其配置和生命周期。
+Provide a custom `HarnessConfig` bean to replace the generated config. Provide a custom `DeepSeekHarness` bean to take over both configuration and lifecycle.
 
-默认自动配置会接入 `ApprovalHandler`、`UserQuestionHandler` Bean，在初始化时声明对应原生 capability。例如：
+Auto-configuration wires `ApprovalHandler` and `UserQuestionHandler` beans and declares the corresponding native capabilities on initialization. For example:
 
 ```kotlin
 @Bean
@@ -166,9 +168,9 @@ fun approvals(): ApprovalHandler = ApprovalHandler { _, _ ->
 }
 ```
 
-应用负责展示请求并返回实际用户决定。回调运行在线程上，可能并发；通过 `CancellationToken` 响应运行时取消。
+The application is responsible for presenting the request and returning the user's decision. Callbacks run on worker threads and may overlap. Use `CancellationToken` to respond to runtime cancellation.
 
-更细的配置可以使用有序 `HarnessConfigCustomizer`，它在属性和回调绑定之后执行：
+For finer control, provide an ordered `HarnessConfigCustomizer`. It runs after property and callback binding:
 
 ```kotlin
 @Bean
@@ -177,18 +179,18 @@ fun runtimeCustomization(): HarnessConfigCustomizer = HarnessConfigCustomizer { 
 }
 ```
 
-Customizer 的集合设置方法与核心 builder 一致，会替换对应集合。也可以在 customizer 中直接设置原生回调和显式 launcher 前缀。自定义整个 `HarnessConfig` 后，不再执行默认的属性转换、回调发现或 customizer。
+The customizer uses the core SDK builder, so setting a collection replaces the corresponding collection. It can also set native callbacks and an explicit launcher prefix. A custom `HarnessConfig` bean bypasses the default property conversion, callback discovery, and customizers.
 
-## 接入 Spring AI 工具
+## Connect Spring AI tools
 
-在应用中引入 Spring AI 的官方 MCP Server starter，并使用其 BOM 管理版本：
+Add the official Spring AI MCP server starter to your application and use the BOM to manage its version:
 
 ```kotlin
 implementation(platform("org.springframework.ai:spring-ai-bom:2.0.2"))
 implementation("org.springframework.ai:spring-ai-starter-mcp-server-webmvc")
 ```
 
-定义工具并注册 `ToolCallbackProvider`：
+Define a tool and register a `ToolCallbackProvider`:
 
 ```kotlin
 class CalculatorTools {
@@ -207,7 +209,7 @@ class ToolsConfiguration {
 }
 ```
 
-Kotlin 编译配置使用 `kotlin { compilerOptions.javaParameters.set(true) }` 保留工具参数名；Java 工具使用 `-parameters`。完整注册代码见 [CalculatorToolsConfiguration](../examples/spring-boot/src/main/kotlin/example/spring/CalculatorToolsConfiguration.kt)。也可以注册单个 `ToolCallback` Bean，由官方 MCP 自动配置转换成工具。
+Keep tool parameter names with `kotlin { compilerOptions.javaParameters.set(true) }` for Kotlin or `-parameters` for Java. See [CalculatorToolsConfiguration](../examples/spring-boot/src/main/kotlin/example/spring/CalculatorToolsConfiguration.kt) for the full registration. You can also register individual `ToolCallback` beans; the official MCP auto-configuration exposes them as tools.
 
 ```yaml
 server:
@@ -227,49 +229,49 @@ dshjk:
       url: http://127.0.0.1:${server.port}/mcp
 ```
 
-`dshjk.mcp` 是按服务器名称索引的连接 Map。名称遵循原生规则 `[A-Za-z0-9_-]{1,32}`，模型会看到 `mcp__application__add` 这样的工具名。每个连接支持：
+`dshjk.mcp` is a connection map keyed by server name. Names follow the native pattern `[A-Za-z0-9_-]{1,32}`; the model sees tool names such as `mcp__application__add`. Each connection supports:
 
-| 配置 | 用途 |
+| Setting | Purpose |
 | --- | --- |
-| `url` | 必填，绝对 HTTP(S) MCP endpoint |
-| `headers` | 可选 HTTP header Map，供服务端鉴权和上下文解析 |
-| `startup-timeout` | 可选原生连接启动时间 |
-| `tool-call-timeout` | 可选原生工具调用时间 |
+| `url` | Required absolute HTTP(S) MCP endpoint |
+| `headers` | Optional map of HTTP headers for authentication and request context |
+| `startup-timeout` | Optional native connection startup timeout |
+| `tool-call-timeout` | Optional native tool call timeout |
 
-starter 将连接转换为 `HarnessPatch.mcpServers(...)` 数据，放在调用者的内联 `dshjk.patches` 之前，条目 ID 为 `dshjk-mcp-<服务器名称>`。配置文件由核心 SDK 在首次启动运行时时生成并在客户端关闭后删除；用户提供的 patch 文件由用户维护。连接建立、工具同步、超时与重连仍由 Harness 原生 MCP 插件管理。
+The starter converts connections to `HarnessPatch.mcpServers(...)` entries with IDs of the form `dshjk-mcp-<server name>` and places them before the application's inline `dshjk.patches`. The core SDK generates the patch file on first runtime launch and removes it after the client closes. The caller owns any user-supplied files. The native Harness MCP plugin manages connections, tool synchronization, timeouts, and reconnection.
 
-工具也可以部署在另一个 Spring Boot 服务中，修改 URL 即可；MCP 服务负责鉴权和请求上下文。JVM 对象和线程上下文不会自动跨进程传递。选用 `server.port=0` 时，需要在端口确定后向客户端提供实际 MCP URL；示例使用固定端口，集成测试使用已启动的独立工具服务。
+To host tools in another Spring Boot service, point the URL at that service. The MCP service handles authentication and request context; JVM objects and thread context do not cross the process boundary automatically. If you set `server.port=0`, supply the actual MCP URL to the client once the port is known. The example uses a fixed port, and the integration tests use a separate tool service that is already running.
 
-## 运行完整示例
+## Run the full example
 
-为应用提供 `dsh`（见[随应用交付 dsh](../README.md#随应用交付-dsh)），再配置模型凭据并运行示例：
+Make `dsh` available (see [bundle dsh with your application](../README.md#bundle-dsh-with-your-application)), configure model credentials, and run:
 
 ```sh
 ./gradlew :examples:spring-boot:run
 ```
 
-无需模型调用即可启动 Web/MCP 服务；首次 `/run` 请求使用已有原生 home/凭据启动 Harness。
+The web and MCP services start without making a model call. The first `/run` request starts Harness with the existing native home and credentials.
 
 ```sh
 curl -H 'Content-Type: application/json' \
-  -d '{"text":"请用 add 工具计算 20 加 22。"}' \
+  -d '{"text":"Use the add tool to calculate 20 plus 22."}' \
   http://127.0.0.1:8080/run
 
 curl -N -H 'Content-Type: application/json' \
-  -d '{"text":"请用 add 工具计算 20 加 22。"}' \
+  -d '{"text":"Use the add tool to calculate 20 plus 22."}' \
   http://127.0.0.1:8080/run/events
 ```
 
-`/run` 返回 Session ID、最终文本和结束原因。`/run/events` 逐条发送原生通知，最后发送 `result` 事件。两条路径均使用 `runStreaming()`，SDK 只保留最终摘要。输出粒度见 [SDK 事件语义](sdk.md#事件订阅)。SDK 等待放在 Boot 管理的任务执行器上，客户端断开导致发送失败时停止本次事件收集，运行时已开始的工作仍遵循原生生命周期。
+`/run` returns the session ID, final text, and finish reason. `/run/events` sends native notifications individually and ends with a `result` event. Both use `runStreaming()`, so the SDK keeps only the final summary. See [event subscriptions](sdk.md#event-subscriptions) for when notifications arrive. The SDK waits on a task executor managed by Boot. If a client disconnect causes a send to fail, the request stops collecting events; work already started in dsh follows the native lifecycle.
 
-## 验证
+## Verification
 
-按 [开发说明](../README.md#开发) 运行包含 Spring AI 和 MCP 的集成测试。测试使用本地模型端点，无需真实模型凭据。
+Follow the [development instructions](../README.md#development) to run integration tests with Spring AI and MCP. They use a local model endpoint and do not need model credentials.
 
-较早的 Boot 4.0 基线可单独回归 starter：
+To test the starter against the earlier Spring Boot 4.0 baseline:
 
 ```sh
 ./gradlew :dshjk-spring-boot-starter:test -PspringBootVersion=4.0.9
 ```
 
-参考：[Spring Boot 自定义自动配置](https://docs.spring.io/spring-boot/reference/features/developing-auto-configuration.html)、[Spring AI Streamable HTTP MCP Server](https://github.com/spring-projects/spring-ai/blob/v2.0.2/spring-ai-docs/src/main/antora/modules/ROOT/pages/api/mcp/mcp-streamable-http-server-boot-starter-docs.adoc)。
+References: [Spring Boot custom auto-configuration](https://docs.spring.io/spring-boot/reference/features/developing-auto-configuration.html) and [Spring AI Streamable HTTP MCP server](https://github.com/spring-projects/spring-ai/blob/v2.0.2/spring-ai-docs/src/main/antora/modules/ROOT/pages/api/mcp/mcp-streamable-http-server-boot-starter-docs.adoc).
