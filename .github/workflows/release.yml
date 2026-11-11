@@ -7,10 +7,10 @@ on:
         description: SDK version (for example, 0.1.0)
         required: true
         type: string
-      bundle-runtime:
-        description: Also publish a new runtime version for all supported platforms
-        default: false
-        type: boolean
+      runtime-run-id:
+        description: Successful Build dsh runtime run ID (omit to publish only the SDK and Starter)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -20,26 +20,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  runtime:
-    if: github.ref == 'refs/heads/main' && inputs.bundle-runtime
-    uses: ./.github/workflows/runtime.yml
-
   publish:
-    needs: runtime
-    if: >-
-      ${{ !cancelled() && github.ref == 'refs/heads/main' &&
-      (needs.runtime.result == 'success' || needs.runtime.result == 'skipped') }}
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
     env:
       SDK_VERSION: ${{ inputs.version }}
-      BUNDLE_RUNTIME: ${{ inputs.bundle-runtime }}
+      RUNTIME_RUN_ID: ${{ inputs.runtime-run-id }}
     outputs:
       runtime-version: ${{ steps.build.outputs.runtime-version }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Verify the runtime build
+        if: inputs.runtime-run-id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          [[ "$RUNTIME_RUN_ID" =~ ^[0-9]+$ ]]
+          run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUNTIME_RUN_ID")"
+          runtime_sha="$(jq -er --arg repo "$GITHUB_REPOSITORY" '
+            select(.path == ".github/workflows/runtime.yml" and .conclusion == "success"
+              and .head_branch == "main" and .head_repository.full_name == $repo) | .head_sha
+          ' <<< "$run")"
+          git merge-base --is-ancestor "$runtime_sha" "$GITHUB_SHA"
+          git diff --exit-code "$runtime_sha" "$GITHUB_SHA" -- libs/dshjk-runtime/package.json libs/dshjk-runtime/package-lock.json
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -49,8 +60,10 @@ jobs:
           node-version: '24'
       - uses: gradle/actions/setup-gradle@v4
       - uses: actions/download-artifact@v4
-        if: inputs.bundle-runtime
+        if: inputs.runtime-run-id != ''
         with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.runtime-run-id }}
           pattern: dshjk-runtime-*
           path: build/release-runtime
       - name: Test release artifacts
@@ -58,7 +71,7 @@ jobs:
         shell: bash
         run: |
           args=("-PreleaseVersion=$SDK_VERSION")
-          if [[ "$BUNDLE_RUNTIME" == true ]]; then
+          if [[ -n "$RUNTIME_RUN_ID" ]]; then
             artifacts="$PWD/build/release-runtime"
             shopt -s globstar nullglob
             linux_jars=("$artifacts"/**/dshjk-runtime-*-linux-x64.jar)
@@ -82,7 +95,7 @@ jobs:
         shell: bash
         run: |
           args=("-PreleaseVersion=$SDK_VERSION")
-          if [[ "$BUNDLE_RUNTIME" == true ]]; then
+          if [[ -n "$RUNTIME_RUN_ID" ]]; then
             args+=("-PdshRuntimeArtifactsDir=$DSH_RUNTIME_ARTIFACTS")
           fi
           ./gradlew publishToMavenCentral "${args[@]}" --no-daemon --console=plain

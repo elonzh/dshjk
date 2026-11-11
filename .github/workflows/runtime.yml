@@ -15,7 +15,6 @@ on:
       - settings.gradle.kts
       - gradle/**
   workflow_dispatch:
-  workflow_call:
 permissions:
   contents: read
 jobs:
