@@ -2,7 +2,7 @@
 
 ## 边界与依赖
 
-`dshjk` 是面向 Java 和 Kotlin 应用的 DeepSeek Harness JVM 客户端。核心制品位于 `libs/dshjk`；可选 `libs/dshjk-spring-boot-starter` 提供框架集成。`examples/java`、`examples/kotlin` 与 `examples/spring-boot` 是独立编译的消费示例。Spring 配置与工具接入集中维护在 [Spring 集成文档](spring.md)。
+`libs/dshjk` 是 JVM SDK，供 Kotlin 和 Java 应用使用。`libs/dshjk-spring-boot-starter` 提供可选的 Spring 集成。添加依赖见 [README](../README.md#添加依赖)，Spring 配置与工具接入见 [Spring 集成文档](spring.md)。
 
 ```mermaid
 flowchart LR
@@ -128,7 +128,7 @@ Java 使用 builder 的同名方法和相同 SAM 接口。`approval/request` 返
 | 配置 | 默认值/用途 |
 | --- | --- |
 | `dshHome` | 可选；省略时由原生运行时按 `DSH_HOME` → `~/.dsh` 发现，显式值优先 |
-| `runtime` | PATH 上的 `dsh`；可用 `RuntimeCommand.node(cli, node)` 选择 JS CLI |
+| `runtime` | 显式命令优先；省略时查找[随包运行时](../README.md#随应用交付-dsh)，然后使用 PATH 上的 `dsh` |
 | `profile` | `sdk`，原生运行时组合 |
 | `patches` / `patchFiles` | 空 / 空；内联数据类操作与随后应用的原始 patch 文件 |
 | `cwd` / `processCwd` | JVM 当前目录 / cwd；分别表示 Agent workspace 与子进程目录 |
@@ -139,6 +139,8 @@ Java 使用 builder 的同名方法和相同 SAM 接口。`approval/request` 返
 | `requestTimeout` | 默认无界。配置后限制等待发送和接收 RPC 应答的时间，后续 Agent 活动有独立生命周期 |
 | `shutdownTimeout` / `eofGrace` / `terminateGrace` | 1 / 6 / 3 秒 |
 | `notificationBufferCapacity` | 8192，每个订阅独立 |
+
+超时统一使用 `java.time.Duration`。Kotlin 可写 `HarnessConfig(requestTimeout = Duration.ofSeconds(45))`，Java 可写 `HarnessConfig.builder().requestTimeout(Duration.ofSeconds(45)).build()`。
 
 配置通过可省略的 `HarnessConfig()` 或 Java `HarnessConfig.builder()` 创建，集合在边界复制为不可修改值，内联 patch 的 JSON 在构造配置时形成快照。省略 `dshHome` 时，SDK 保留子进程环境，由运行时解析 home，包括空白环境值回退和 `~` 展开；SDK 不在 JVM 内复制发现算法。启动参数按 argv 传递，不经 shell 解释；`RuntimeCommand.of` 支持显式 launcher 前缀，例如自定义 Node loader。SDK 不修改宿主全局环境。
 

@@ -6,6 +6,7 @@ import com.elonzh.dshjk.error.ProtocolException
 import com.elonzh.dshjk.protocol.*
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
+import java.time.Duration
 
 /** Low-level native SDK operations. Initialize once before creating or restoring sessions. */
 class HarnessClient @JvmOverloads constructor(val config: HarnessConfig = HarnessConfig()) : AutoCloseable {
@@ -35,9 +36,9 @@ class HarnessClient @JvmOverloads constructor(val config: HarnessConfig = Harnes
     /** Explicit low-level protocol shutdown. close() additionally reaps the process. */
     @JvmSynthetic suspend fun shutdown() { request(SdkRequestMethod.SHUTDOWN).objectValue() }
     /** Escape hatch for plugin-added RPC methods; errors preserve wire code and data. */
-    @JvmSynthetic suspend fun request(method: String, params: JsonObject = JsonObject(emptyMap()), timeout: java.time.Duration? = config.requestTimeout): JsonElement =
+    @JvmSynthetic suspend fun request(method: String, params: JsonObject = JsonObject(emptyMap()), timeout: Duration? = config.requestTimeout): JsonElement =
         connection.request(method, params, timeout)
-    @JvmSynthetic suspend fun request(method: SdkRequestMethod, params: JsonObject = JsonObject(emptyMap()), timeout: java.time.Duration? = config.requestTimeout): JsonElement =
+    @JvmSynthetic suspend fun request(method: SdkRequestMethod, params: JsonObject = JsonObject(emptyMap()), timeout: Duration? = config.requestTimeout): JsonElement =
         request(method.wireName, params, timeout)
     @JvmName("request") @JvmOverloads fun requestBlocking(method: SdkRequestMethod, params: JsonObject = JsonObject(emptyMap())): JsonElement = runBlocking { request(method, params) }
     @JvmSynthetic suspend fun closeAsync() = connection.close()

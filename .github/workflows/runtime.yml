@@ -1,0 +1,109 @@
+name: Build dsh runtime
+on:
+  push:
+    paths:
+      - .github/workflows/runtime.yml
+      - libs/dshjk-runtime/**
+      - build.gradle.kts
+      - settings.gradle.kts
+      - gradle/**
+  pull_request:
+    paths:
+      - .github/workflows/runtime.yml
+      - libs/dshjk-runtime/**
+      - build.gradle.kts
+      - settings.gradle.kts
+      - gradle/**
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  runtime:
+    name: Build native dsh ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: linux-x64 }
+          - { os: ubuntu-24.04-arm, target: linux-arm64 }
+          - { os: macos-15, target: macos-arm64 }
+          - { os: macos-15-intel, target: macos-x64 }
+          - { os: windows-2025, target: win-x64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Read the pinned dsh version
+        id: upstream
+        shell: bash
+        run: |
+          node <<'NODE' >> "$GITHUB_OUTPUT"
+          const { dependencies } = require("./libs/dshjk-runtime/package.json");
+          const version = dependencies["@deepseek-ai/dsh"];
+          if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+            throw new Error("Expected a pinned dsh version");
+          }
+          console.log("ref=dsh-v" + version);
+          NODE
+      - uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: ${{ steps.upstream.outputs.ref }}
+          path: upstream
+          persist-credentials: false
+      - uses: pnpm/action-setup@v5.0.0
+        with:
+          package_json_file: upstream/package.json
+          cache: true
+          cache_dependency_path: upstream/pnpm-lock.yaml
+      - uses: actions/setup-python@v6.3.0
+        with:
+          python-version: '3.10'
+      - name: Enable symlinks on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >-
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock"
+          /t REG_DWORD /f /v "AllowDevelopmentWithoutDevLicense" /d "1"
+      - name: Install upstream build dependencies
+        working-directory: upstream
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if pnpm install --frozen-lockfile; then exit 0; fi
+            [ "$attempt" -lt 3 ] && sleep 10
+          done
+          exit 1
+      - name: Build the upstream executable
+        working-directory: upstream
+        env:
+          DSH_BUILD_CLIENT_PROFILE: official
+          DSH_TARGET: ${{ matrix.target }}
+        shell: bash
+        run: pnpm exec tsx scripts/build-exe-for-python-sdk.ts --targets="node24-$DSH_TARGET" --build-artifacts
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Package the platform runtime
+        env:
+          DSH_TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          ./gradlew :dshjk-runtime:publishAllPublicationsToLocalDevelopmentRepository -PdshRuntimeSourceDir=upstream --console=plain
+          classifier="${DSH_TARGET/#win-/windows-}"
+          set -- build/repository/com/elonzh/dshjk-runtime/*/*-"$classifier".jar
+          test "$#" -eq 1
+          test -f "$1"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dshjk-runtime-${{ matrix.target }}
+          path: build/repository/
+          if-no-files-found: error
+          compression-level: 0

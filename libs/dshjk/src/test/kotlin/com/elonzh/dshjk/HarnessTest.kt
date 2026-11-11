@@ -24,7 +24,8 @@ class HarnessTest {
         dshHome = root.resolve("home"), cwd = root,
         runtime = RuntimeCommand.node(Path.of(javaClass.getResource("/runtime.mjs")!!.toURI())),
         environment = mapOf("FIXTURE_MODE" to mode), requestTimeout = Duration.ofSeconds(2),
-        initializeTimeout = Duration.ofMillis(if (mode == "hang") 200 else 2000), eofGrace = Duration.ofMillis(100), terminateGrace = Duration.ofMillis(100),
+        initializeTimeout = Duration.ofMillis(if (mode == "hang") 200 else 2000),
+        eofGrace = Duration.ofMillis(100), terminateGrace = Duration.ofMillis(100),
         notificationBufferCapacity = capacity, approvalHandler = approval, userQuestionHandler = question,
     )
     @Test fun `default entry points need no configuration or runtime launch`(): Unit = runBlocking {

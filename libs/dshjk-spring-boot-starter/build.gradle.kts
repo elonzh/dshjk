@@ -25,3 +25,7 @@ dependencies {
 }
 sourceSets.test { resources.srcDir(rootProject.file("libs/dshjk/src/test/resources")) }
 kotlin { compilerOptions.javaParameters.set(true) }
+
+publishing {
+    publications.create<MavenPublication>("maven") { from(components["java"]) }
+}

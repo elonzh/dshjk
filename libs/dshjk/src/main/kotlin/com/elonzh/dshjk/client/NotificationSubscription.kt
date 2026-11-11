@@ -7,6 +7,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.jdk9.asPublisher
+import kotlinx.coroutines.time.withTimeoutOrNull
 import java.time.Duration
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -29,14 +30,15 @@ class NotificationSubscription internal constructor(
     }
     @JvmSynthetic suspend fun next(timeout: Duration? = null): HarnessNotification =
         if (timeout == null) queue.receive() else {
-            require(timeout.toMillis() > 0)
-            withTimeoutOrNull(timeout.toMillis()) { queue.receive() }
+            require(timeout >= Duration.ofMillis(1))
+            withTimeoutOrNull(timeout) { queue.receive() }
                 ?: throw RequestTimeoutException("Notification wait timed out")
         }
     fun tryNext(): HarnessNotification? = queue.tryReceive().getOrNull()
     @get:JvmSynthetic val events: Flow<HarnessNotification> get() = flow { while (true) emit(next()) }
     fun events(): java.util.concurrent.Flow.Publisher<HarnessNotification> = events.asPublisher(Dispatchers.IO)
-    @JvmName("next") @JvmOverloads fun nextBlocking(timeout: Duration? = null): HarnessNotification = runBlocking { next(timeout) }
+    @JvmName("next") @JvmOverloads
+    fun nextBlocking(timeout: Duration? = null): HarnessNotification = runBlocking { next(timeout) }
     override fun close() {
         closed.set(true)
         detach(this)

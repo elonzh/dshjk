@@ -8,7 +8,7 @@ import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
+import org.junit.jupiter.api.condition.EnabledIf
 import org.junit.jupiter.api.io.TempDir
 import java.net.InetSocketAddress
 import java.nio.file.Files
@@ -17,11 +17,18 @@ import java.time.Duration
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.test.*
 
-/** Unmodified published CLI, local Messages endpoint, disposable home, no external credentials. */
-@EnabledIfEnvironmentVariable(named = "DSHJK_TEST_CLI", matches = ".+")
+/** Upstream CLI, local Messages endpoint, disposable home, no external credentials. */
+@EnabledIf("hasNativeRuntime")
 @Timeout(90)
 class NativeRuntimeTest {
+    companion object {
+        private val cli = System.getenv("DSHJK_TEST_CLI")?.takeIf(String::isNotBlank)
+        private val bundled = java.lang.Boolean.getBoolean("dshjk.test.bundledRuntime")
+        @JvmStatic fun hasNativeRuntime() = cli != null || bundled
+    }
+
     @TempDir lateinit var root: Path
+    private val runtime = cli?.let { RuntimeCommand.node(Path.of(it)) } ?: RuntimeCommand.automatic
     private fun response(text: String, stopReason: String = "end_turn") = listOf(
         """{"type":"message_start","message":{"id":"native-fixture","model":"deepseek-v4-flash","usage":{"input_tokens":3,"output_tokens":0}}}""",
         """{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"$text"}}""",
@@ -46,6 +53,11 @@ class NativeRuntimeTest {
             val session = h.session()
             try {
                 assertEquals("deepseek-harness-sdk-runtime", h.start().serverInfo.name)
+                if (bundled) {
+                    val executable = ProcessHandle.of(checkNotNull(h.client.pid)).orElseThrow().info().command().orElseThrow()
+                    assertTrue(Path.of(executable).toRealPath()
+                        .startsWith(Path.of(System.getProperty("dshjk.runtime.cacheDir")).toRealPath()))
+                }
                 assertTrue(session.id.matches(Regex("session-[0-9a-f]{32}")))
                 assertEquals(root.toRealPath(), Path.of(session.getWorkingDirectory()).toRealPath())
                 val subdir = Files.createDirectory(root.resolve("subdir"))
@@ -144,7 +156,7 @@ class NativeRuntimeTest {
             }
             val config = HarnessConfig(
                 dshHome = if (case.explicit) explicitHome else null,
-                cwd = workspace, runtime = RuntimeCommand.node(Path.of(System.getenv("DSHJK_TEST_CLI"))),
+                cwd = workspace, runtime = runtime,
                 profile = "sdk-minimal", environment = env, inheritEnvironment = false,
             )
             val expectedHome = when {
@@ -163,9 +175,10 @@ class NativeRuntimeTest {
     }
     private fun nativeConfig(profile: String, port: Int, question: UserQuestionHandler? = null) = HarnessConfig(
         dshHome = root.resolve("home-$profile"), cwd = root,
-        runtime = RuntimeCommand.node(Path.of(System.getenv("DSHJK_TEST_CLI"))), profile = profile,
+        runtime = runtime, profile = profile,
         environment = mapOf("DEEPSEEK_API_KEY" to "local-fixture", "DEEPSEEK_BASE_URL" to "http://127.0.0.1:$port",
             "DSH_TELEMETRY_DISABLED" to "1", "DSH_MAX_TOKENS_AS_SUCCESS" to "false", "DSH_PERMISSION_MODE" to "danger-full-access"),
-        userQuestionHandler = question, reasoningEffort = "max", maxTokens = 1234, initializeTimeout = Duration.ofSeconds(30), requestTimeout = Duration.ofSeconds(30),
+        userQuestionHandler = question, reasoningEffort = "max", maxTokens = 1234,
+        initializeTimeout = Duration.ofSeconds(30), requestTimeout = Duration.ofSeconds(30),
     )
 }

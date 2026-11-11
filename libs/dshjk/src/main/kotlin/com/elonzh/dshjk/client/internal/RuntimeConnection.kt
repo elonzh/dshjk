@@ -7,11 +7,11 @@ import com.elonzh.dshjk.protocol.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.time.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import java.io.BufferedWriter
 import java.time.Duration
-import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
@@ -44,9 +44,12 @@ internal class RuntimeConnection(private val config: HarnessConfig) {
     fun start() = synchronized(stateLock) {
         checkUsable()
         if (process != null) return@synchronized
+        var executable = config.runtime.executable
         val child = try {
+            val runtime = BundledRuntime.resolve(config.runtime)
+            executable = runtime.executable
             val files = RuntimePatchFiles(config).also { patchFiles = it }
-            val argv = listOf(config.runtime.executable) + config.runtime.arguments + listOf("--profile", config.profile) +
+            val argv = listOf(executable) + runtime.arguments + listOf("--profile", config.profile) +
                 files.paths.flatMap { listOf("--patch", it.toString()) }
             val builder = ProcessBuilder(argv).directory(config.processCwd.toAbsolutePath().normalize().toFile())
             if (!config.inheritEnvironment) builder.environment().clear()
@@ -55,7 +58,7 @@ internal class RuntimeConnection(private val config: HarnessConfig) {
             builder.start()
         } catch (error: Exception) {
             try { patchFiles?.close() } catch (cleanup: Exception) { error.addSuppressed(cleanup) }
-            val failure = diagnostic("Cannot start ${config.runtime.executable}", error)
+            val failure = diagnostic("Cannot start $executable: ${error.message}", error)
             fail(failure)
             throw failure
         }
@@ -91,7 +94,7 @@ internal class RuntimeConnection(private val config: HarnessConfig) {
     suspend fun request(method: String, params: JsonObject = JsonObject(emptyMap()), timeout: Duration? = config.requestTimeout,
         allowClosing: Boolean = false): JsonElement {
         if (!allowClosing) start()
-        val id = JsonPrimitive("req_${UUID.randomUUID()}")
+        val id = JsonPrimitive(HarnessProtocol.newRequestId())
         val waiter = CompletableDeferred<JsonElement>()
         synchronized(stateLock) { checkUsable(allowClosing); pending[id] = waiter }
         // The caller can stop waiting even when the OS pipe is blocked in a write.
@@ -110,7 +113,7 @@ internal class RuntimeConnection(private val config: HarnessConfig) {
         }
         try {
             return if (timeout == null) waiter.await() else {
-                withTimeoutOrNull(timeout.toMillis()) { waiter.await() }
+                withTimeoutOrNull(timeout) { waiter.await() }
                     ?: throw RequestTimeoutException("$method timed out waiting for dsh profile '${config.profile}' after $timeout\n${stderr()}")
             }
         } finally {
@@ -236,9 +239,10 @@ internal class RuntimeConnection(private val config: HarnessConfig) {
                         // Process.destroy() can close the pipe streams synchronously on the JDK.
                         val handle = child.toHandle()
                         handle.destroy()
-                        if (!child.waitFor(config.terminateGrace.toMillis(), TimeUnit.MILLISECONDS)) {
+                        val terminateGraceMillis = config.terminateGrace.toMillis()
+                        if (!child.waitFor(terminateGraceMillis, TimeUnit.MILLISECONDS)) {
                             handle.destroyForcibly()
-                            if (!child.waitFor(config.terminateGrace.toMillis(), TimeUnit.MILLISECONDS)) {
+                            if (!child.waitFor(terminateGraceMillis, TimeUnit.MILLISECONDS)) {
                                 throw diagnostic("Runtime termination could not be confirmed")
                             }
                         }

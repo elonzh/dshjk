@@ -1,8 +1,52 @@
 # dshjk
 
-DeepSeek Harness 的独立 JVM SDK。核心制品 `com.elonzh:dshjk` 同时支持 Java 17+ 与 Kotlin 2.2.0+，包名前缀 `com.elonzh.dshjk`。当前版本 `0.1.0-SNAPSHOT`，尚未远程发布。
+DeepSeek Harness 的 JVM SDK，适用于 Java 17+ 和 Kotlin 2.2.0+ 应用。
 
 SDK 直接启动原生 `dsh --profile sdk`，通过双向 JSONL JSON-RPC 2.0 通信。支持多 Session、文本/图片、原生命令、持久化恢复、工作目录、事件订阅、审批和用户问题；内置事件载荷、状态与结束原因均提供类型化定义。Kotlin 使用 suspend/Flow；Java 在同一类型上使用阻塞方法和 JDK `Flow.Publisher`。
+
+## 添加依赖
+
+Gradle 和 Maven 使用同一个 SDK 坐标。将 `SDK_VERSION` 替换为所选发布版本。
+
+```kotlin
+dependencies {
+    implementation("com.elonzh:dshjk:SDK_VERSION")
+}
+```
+
+```xml
+<dependency>
+    <groupId>com.elonzh</groupId>
+    <artifactId>dshjk</artifactId>
+    <version>SDK_VERSION</version>
+</dependency>
+```
+
+## 随应用交付 dsh
+
+SDK 可直接启动 PATH 上的 `dsh`，也可以通过 `HarnessConfig.runtime` 指定可执行文件。使用模型前请在 dsh 中配置模型和凭据。当前兼容基线是 DeepSeek Harness `0.2.2-rc.1`。
+
+如果希望应用自带 dsh，添加可选运行时依赖，并按**部署平台**选择 classifier。支持 `linux-x64`、`linux-arm64`、`macos-x64`、`macos-arm64` 和 `windows-x64`。以下以 Linux x64 为例。`RUNTIME_VERSION` 使用所选运行时的发布版本，格式为 `<上游 dsh 版本>-<打包修订号>`。
+
+```kotlin
+dependencies {
+    runtimeOnly("com.elonzh:dshjk-runtime:RUNTIME_VERSION:linux-x64")
+}
+```
+
+```xml
+<dependency>
+    <groupId>com.elonzh</groupId>
+    <artifactId>dshjk-runtime</artifactId>
+    <version>RUNTIME_VERSION</version>
+    <classifier>linux-x64</classifier>
+    <scope>runtime</scope>
+</dependency>
+```
+
+默认启动顺序为显式配置、随包的 dsh、PATH 上的 dsh。随包的 dsh 自带 Node，首次启动时解压到 `~/.cache/dshjk/runtime/<平台>/<运行时版本>`。可用 JVM 属性 `dshjk.runtime.cacheDir` 指定其他缓存根目录。
+
+升级随包的 dsh 时，更新 `dshjk-runtime` 依赖版本。新版首次启动时会解压到自己的目录。旧缓存可以在使用它的应用全部停止后删除。
 
 ## Kotlin
 
@@ -28,7 +72,7 @@ try {
 }
 ```
 
-完整 [Kotlin 示例](examples/kotlin/src/main/kotlin/example/KotlinExample.kt) 使用独立协程收集 `Flow`，处理文本、工具、命令、状态与子 Agent 事件。默认使用 PATH 上的 `dsh`、官方 `sdk` profile 和当前工作目录。
+完整 [Kotlin 示例](examples/kotlin/src/main/kotlin/example/KotlinExample.kt) 使用独立协程收集 `Flow`，处理文本、工具、命令、状态与子 Agent 事件。默认使用官方 `sdk` profile 和当前工作目录。
 
 ## Java
 
@@ -55,7 +99,7 @@ try (var harness = new DeepSeekHarness()) {
 
 完整 [Java 示例](examples/java/src/main/java/example/JavaExample.java) 使用 JDK `Flow.Subscriber`，展示 demand、错误传播、取消和队列排空。Java 无需 Continuation、runBlocking 或额外语言适配包。
 
-## 会话与可选配置
+## 会话与配置
 
 `harness.run(input)` 自动创建独立会话，ID 遵循官方 SDK 的 `session-<32 位十六进制 UUID>` 格式。要连续对话，保留 `harness.session()` 返回的句柄并多次调用 `session.run(input)`；结果中的 `sessionId` 可用于后续恢复。也可通过 `session(id)` 使用显式 ID。
 
@@ -71,57 +115,27 @@ val harness = DeepSeekHarness(HarnessConfig(
 
 Java 使用 `HarnessConfig.builder().cwd(...).dshHome(...).runtime(...).build()`，各项均可省略。
 
+会话恢复、事件订阅与完整配置见 [SDK 文档](docs/sdk.md)。
+
 ## Spring Boot 4 与 Spring AI
 
-添加可选 starter 后，可直接注入由 Spring 管理的 `DeepSeekHarness`：
-
-```kotlin
-implementation("com.elonzh:dshjk-spring-boot-starter:0.1.0-SNAPSHOT")
-```
+添加可选 [Spring Boot Starter](docs/spring.md#使用-starter) 后，可直接注入由 Spring 管理的 `DeepSeekHarness`。
 
 starter 保留原生默认行为，支持数据类 patch、类型化供应商配置、Bean 覆盖、回调注入和容器关闭时的进程回收。未显式配置模型时，可从现有 Spring AI OpenAI / Anthropic ChatModel 提取连接配置。Spring AI 的 `@Tool` / `ToolCallbackProvider` 经官方 MCP Server 接入 Harness；连接配置由 starter 转为原生启动 patch。
 
 [Spring 集成文档](docs/spring.md)包含完整配置与用法；[Spring Boot 示例](examples/spring-boot/src/main/kotlin/example/spring/HarnessApplication.kt)提供工具注册、普通 HTTP 请求和 SSE 事件输出。
 
-## 构建与使用
+## 开发
 
-构建需要 JDK 17（测试可切换 JDK 21），运行 npm CLI 需要 Node.js 24.9+。Gradle Wrapper、Kotlin 和依赖版本均已固定。`dsh` 由宿主安装。省略 home 时，原生运行时使用 `DSH_HOME`，未设置或为空白时使用 `~/.dsh`；显式 `dshHome` 配置可覆盖它。模型凭据通过原生 profile 或 `HarnessConfig.environment` 提供。
-
-```sh
-./gradlew build
-# 项目内安装未经修改的固定版 CLI，仅供开发验证
-npm ci --prefix infra/dsh-runtime --no-audit --no-fund
-DSHJK_TEST_CLI="$PWD/infra/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js" ./gradlew build
-# 使用已安装的 JDK 21 跑同一套测试
-DSHJK_TEST_CLI="$PWD/infra/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js" ./gradlew build -PtestJavaVersion=21
-# 仅写入本仓库 build/repository
-./gradlew publishAllPublicationsToLocalDevelopmentRepository
-```
-
-未设置 `DSHJK_TEST_CLI` 时，原生集成测试明确跳过；协议/进程测试仍需要 Node。两种语言的示例始终参与编译。所有模型测试使用本地 HTTP 夹具和临时 home，无需外部 API 密钥或 Testcontainers。
-
-开发期消费本地 Maven 制品：
-
-```kotlin
-repositories {
-    maven { url = uri("/absolute/path/to/dshjk/build/repository") }
-    mavenCentral()
-}
-dependencies { implementation("com.elonzh:dshjk:0.1.0-SNAPSHOT") }
-```
-
-不传参数时只检查运行时和 Session 目录；传入提示词后持续输出文本和事件：
+使用 JDK 17 和 Node.js 24.9+。安装仓库锁定的 dsh 后，运行 SDK、Spring 和示例的测试。
 
 ```sh
-./gradlew :examples:java:run
-./gradlew :examples:kotlin:run
-# 运行模型并观察输出（需要已配置模型凭据）
-./gradlew -q :examples:java:run --args='"Explain this project."'
-./gradlew -q :examples:kotlin:run --args='"Explain this project."'
+npm ci --prefix libs/dshjk-runtime
+DSHJK_TEST_CLI="$PWD/libs/dshjk-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js" ./gradlew build
 ```
 
-完整示例将 assistant/命令文本写入 stdout，事件与状态写入 stderr；结束前排空已收到的事件，避免遗漏最后一段输出。原生 SDK 的文本按模型步骤到达，具体语义见 [事件订阅与输出粒度](docs/sdk.md#事件订阅)。
+单独运行核心 SDK 测试用 `./gradlew :dshjk:test`。模型集成测试使用本地 HTTP 夹具。
 
-架构、完整操作对照、状态归属、配置、事件和扩展方式集中维护在 [SDK 使用与架构](docs/sdk.md)。兼容基线为 DeepSeek Harness `0.2.2-rc.1`；该上游处于 developer preview，升级时应重新运行原生测试。
+运行时 JAR 由 [Build dsh runtime](.github/workflows/runtime.yml) 按平台构建。每个上游版本首次发布时使用修订号 `1`，同一上游版本重新打包发布时递增。
 
 项目使用 [Apache License 2.0](LICENSE)。第三方声明见 [NOTICE](NOTICE)。

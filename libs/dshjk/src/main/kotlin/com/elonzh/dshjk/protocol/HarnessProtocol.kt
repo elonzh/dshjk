@@ -3,9 +3,15 @@ package com.elonzh.dshjk.protocol
 import com.elonzh.dshjk.error.ProtocolException
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.*
+import java.util.UUID
 
 object HarnessProtocol {
     @JvmField val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false; classDiscriminator = "kind" }
+
+    internal fun newSessionId(): String = "session-${UUID.randomUUID().toString().replace("-", "")}"
+
+    internal fun newRequestId(): String = "req_${UUID.randomUUID()}"
+
     @JvmStatic fun text(input: String): List<ContentBlock> = listOf(ContentBlock.Text(input))
     @JvmStatic fun content(value: JsonObject): ContentBlock = boundary("content block") {
         when (ContentType.fromWire(value.string("type"))) {

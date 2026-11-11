@@ -4,15 +4,11 @@ permissions:
   contents: read
 jobs:
   build:
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { os: ubuntu-latest, testJava: '17' }
-          - { os: ubuntu-latest, testJava: '21' }
-          - { os: macos-latest, testJava: '17' }
-          - { os: windows-latest, testJava: '17' }
-    runs-on: ${{ matrix.os }}
+        testJava: ['17', '21']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -25,17 +21,17 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: infra/dsh-runtime/package-lock.json
+          cache-dependency-path: libs/dshjk-runtime/package-lock.json
       - uses: gradle/actions/setup-gradle@v4
-      - run: npm ci --prefix infra/dsh-runtime --no-audit --no-fund
+      - run: npm ci --prefix libs/dshjk-runtime --no-audit --no-fund
       - run: ./gradlew build -PtestJavaVersion=${{ matrix.testJava }} --console=plain
         shell: bash
         env:
-          DSHJK_TEST_CLI: ${{ github.workspace }}/infra/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js
+          DSHJK_TEST_CLI: ${{ github.workspace }}/libs/dshjk-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: reports-${{ matrix.os }}-${{ matrix.testJava }}
+          name: reports-jdk-${{ matrix.testJava }}
           path: |
             libs/*/build/reports/tests/
             examples/spring-boot/build/reports/tests/

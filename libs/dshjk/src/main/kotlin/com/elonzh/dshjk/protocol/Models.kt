@@ -1,9 +1,8 @@
 package com.elonzh.dshjk.protocol
 
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
-import java.util.concurrent.atomic.AtomicBoolean
 
 @Serializable data class ServerInfo(val name: String, val version: String)
 @Serializable data class InitializeResult(val serverInfo: ServerInfo)
@@ -91,14 +90,6 @@ sealed interface UserQuestionResult {
     data class Answer(val answers: List<AnswerItem>) : UserQuestionResult
     data object Cancelled : UserQuestionResult
 }
-class CancellationToken internal constructor() {
-    private val cancelled = AtomicBoolean(false)
-    val isCancelled: Boolean get() = cancelled.get()
-    internal fun cancel() { cancelled.set(true) }
-}
-/** Callbacks run independently of the protocol reader; they may make further SDK calls. */
-fun interface ApprovalHandler { fun handle(request: ApprovalRequest, cancellation: CancellationToken): ApprovalResult }
-fun interface UserQuestionHandler { fun handle(request: UserQuestionRequest, cancellation: CancellationToken): UserQuestionResult }
 fun interface NotificationObserver { fun onNotification(notification: HarnessNotification) }
 
 object ContentBlockSerializer : kotlinx.serialization.KSerializer<ContentBlock> {

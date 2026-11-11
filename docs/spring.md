@@ -18,8 +18,10 @@ flowchart LR
 
 ## 使用 starter
 
+将 `SDK_VERSION` 替换为所选 SDK 发布版本。
+
 ```kotlin
-implementation("com.elonzh:dshjk-spring-boot-starter:0.1.0-SNAPSHOT")
+implementation("com.elonzh:dshjk-spring-boot-starter:SDK_VERSION")
 ```
 
 在已有 Spring Boot 应用中注入客户端：
@@ -240,7 +242,7 @@ starter 将连接转换为 `HarnessPatch.mcpServers(...)` 数据，放在调用�
 
 ## 运行完整示例
 
-先安装并配置 `dsh`，然后执行：
+为应用提供 `dsh`（见[随应用交付 dsh](../README.md#随应用交付-dsh)），再配置模型凭据并运行示例：
 
 ```sh
 ./gradlew :examples:spring-boot:run
@@ -262,11 +264,7 @@ curl -N -H 'Content-Type: application/json' \
 
 ## 验证
 
-```sh
-DSHJK_TEST_CLI="$PWD/infra/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js" ./gradlew build
-```
-
-自动配置测试覆盖默认值、禁用、用户 Bean 覆盖、数据类属性与回调绑定、自定义顺序、ChatModel 发现与选择、Spring AI 官方自动配置的连接属性、无 Spring AI 类路径，以及容器关闭回收子进程。核心测试检查真实子进程收到的 patch 顺序、JSON 类型、配置快照和异常退出后文件清理。真实集成测试启动 Boot Web 应用、Spring AI MCP Server、本地 Messages / Chat Completions 模型夹具和未经修改的 `dsh`，验证 MCP 工具闭环、ChatModel 连接提取、实际端点/认证/模型与 HTTP/SSE 输出。独立工程验证仅消费本地 Maven starter 制品时的自动配置发现和进程回收。
+按 [开发说明](../README.md#开发) 运行包含 Spring AI 和 MCP 的集成测试。测试使用本地模型端点，无需真实模型凭据。
 
 较早的 Boot 4.0 基线可单独回归 starter：
 

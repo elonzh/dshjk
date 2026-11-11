@@ -5,7 +5,6 @@ import com.elonzh.dshjk.protocol.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import java.util.UUID
 
 /** One lazily initialized runtime, shared by multiple independent sessions. Always close the owner. */
 class DeepSeekHarness @JvmOverloads constructor(val config: HarnessConfig = HarnessConfig()) : AutoCloseable {
@@ -28,7 +27,7 @@ class DeepSeekHarness @JvmOverloads constructor(val config: HarnessConfig = Harn
     }
     /** Lazy handle; omitted ids follow the native SDK session-<UUID hex> convention. */
     @JvmOverloads fun session(id: String? = null): HarnessSession {
-        val sessionId = id ?: "session-${UUID.randomUUID().toString().replace("-", "")}"
+        val sessionId = id ?: HarnessProtocol.newSessionId()
         require(sessionId.isNotBlank()); return HarnessSession(this, sessionId)
     }
     @JvmSynthetic suspend fun resumeSession(id: String): HarnessSession {

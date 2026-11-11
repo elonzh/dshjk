@@ -7,7 +7,7 @@ import kotlinx.serialization.json.*
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
+import org.junit.jupiter.api.condition.EnabledIf
 import org.junit.jupiter.api.io.TempDir
 import org.springframework.ai.openai.OpenAiChatModel
 import org.springframework.ai.openai.OpenAiChatOptions
@@ -28,11 +28,17 @@ import java.time.Duration
 import java.util.concurrent.CopyOnWriteArrayList
 
 /** Real Boot HTTP/SSE, official Spring AI MCP server, unmodified dsh and a local model endpoint. */
-@EnabledIfEnvironmentVariable(named = "DSHJK_TEST_CLI", matches = ".+")
+@EnabledIf("hasNativeRuntime")
 @Timeout(90)
 class NativeSpringAiIntegrationTest {
+    companion object {
+        private val cli = System.getenv("DSHJK_TEST_CLI")?.takeIf(String::isNotBlank)
+        @JvmStatic fun hasNativeRuntime() = cli != null || java.lang.Boolean.getBoolean("dshjk.test.bundledRuntime")
+    }
+
     @TempDir
     lateinit var root: Path
+    private val runtimeArgs = cli?.let { arrayOf("--dshjk.runtime.cli=$it") } ?: emptyArray()
 
     @Test
     fun managedRuntimeCallsSpringAiToolThroughMcpAndStreamsNativeEvents() {
@@ -64,7 +70,7 @@ class NativeSpringAiIntegrationTest {
                 (SpringApplication.run(
                     HarnessApplication::class.java,
                     "--server.port=0", "--spring.main.banner-mode=off", "--logging.level.root=WARN",
-                    "--dshjk.profile=sdk-minimal", "--dshjk.runtime.cli=${System.getenv("DSHJK_TEST_CLI")}",
+                    "--dshjk.profile=sdk-minimal", *runtimeArgs,
                     "--dshjk.dsh-home=${root.resolve("home")}", "--dshjk.cwd=$root",
                     "--dshjk.mcp.application.url=http://127.0.0.1:$toolPort/mcp",
                     "--dshjk.mcp.application.startup-timeout=15s",
@@ -135,7 +141,7 @@ class NativeSpringAiIntegrationTest {
             (SpringApplication(HarnessApplication::class.java, OpenAiFixture::class.java).run(
                 "--server.port=0", "--spring.main.banner-mode=off", "--logging.level.root=WARN",
                 "--fixture-model-url=http://127.0.0.1:${model.address.port}/v1",
-                "--dshjk.profile=sdk-minimal", "--dshjk.runtime.cli=${System.getenv("DSHJK_TEST_CLI")}",
+                "--dshjk.profile=sdk-minimal", *runtimeArgs,
                 "--dshjk.dsh-home=${root.resolve("derived-home")}", "--dshjk.cwd=$root",
                 "--dshjk.environment.DSH_TELEMETRY_DISABLED=1",
             ) as ServletWebServerApplicationContext).use { app ->

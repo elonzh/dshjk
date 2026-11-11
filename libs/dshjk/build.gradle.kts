@@ -4,6 +4,8 @@ plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
 }
+description = "DeepSeek Harness SDK for Java and Kotlin"
+
 dependencies {
     api(libs.coroutines.core)
     api(libs.serialization.json)
@@ -13,4 +15,7 @@ dependencies {
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.launcher)
 }
-description = "DeepSeek Harness SDK for Java and Kotlin"
+
+publishing {
+    publications.create<MavenPublication>("maven") { from(components["java"]) }
+}
