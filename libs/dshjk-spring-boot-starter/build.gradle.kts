@@ -5,6 +5,13 @@ plugins {
     alias(libs.plugins.kotlin.kapt)
 }
 description = "Spring Boot 4 integration for DeepSeek Harness"
+if (providers.gradleProperty("releaseVersion").isPresent) {
+    apply(plugin = "com.vanniktech.maven.publish.base")
+}
+java { withJavadocJar() }
+tasks.named<Jar>("javadocJar") {
+    from(rootProject.files("docs/spring.md", "docs/spring.zh.md"))
+}
 val bootVersion = providers.gradleProperty("springBootVersion").orElse(libs.versions.spring.boot)
 dependencies {
     api(project(":dshjk"))

@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: SDK version (for example, 0.1.0)
+        required: true
+        type: string
+      bundle-runtime:
+        description: Also publish a new runtime version for all supported platforms
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: maven-central-release
+  cancel-in-progress: false
+
+jobs:
+  runtime:
+    if: github.ref == 'refs/heads/main' && inputs.bundle-runtime
+    uses: ./.github/workflows/runtime.yml
+
+  publish:
+    needs: runtime
+    if: >-
+      ${{ !cancelled() && github.ref == 'refs/heads/main' &&
+      (needs.runtime.result == 'success' || needs.runtime.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SDK_VERSION: ${{ inputs.version }}
+      BUNDLE_RUNTIME: ${{ inputs.bundle-runtime }}
+    outputs:
+      runtime-version: ${{ steps.build.outputs.runtime-version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: actions/download-artifact@v4
+        if: inputs.bundle-runtime
+        with:
+          pattern: dshjk-runtime-*
+          path: build/release-runtime
+      - name: Test release artifacts
+        id: build
+        shell: bash
+        run: |
+          args=("-PreleaseVersion=$SDK_VERSION")
+          if [[ "$BUNDLE_RUNTIME" == true ]]; then
+            artifacts="$PWD/build/release-runtime"
+            shopt -s globstar nullglob
+            linux_jars=("$artifacts"/**/dshjk-runtime-*-linux-x64.jar)
+            test "${#linux_jars[@]}" -eq 1
+            jar="${linux_jars[0]}"
+            args+=("-PdshRuntimeArtifactsDir=$artifacts" "-PdshjkTestRuntimeJar=$jar")
+            echo "DSH_RUNTIME_ARTIFACTS=$artifacts" >> "$GITHUB_ENV"
+            runtime_version="${jar##*/dshjk-runtime-}"
+            echo "runtime-version=${runtime_version%-linux-x64.jar}" >> "$GITHUB_OUTPUT"
+          else
+            npm ci --prefix libs/dshjk-runtime --no-audit --no-fund
+            export DSHJK_TEST_CLI="$PWD/libs/dshjk-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js"
+          fi
+          ./gradlew build "${args[@]}" --no-daemon --console=plain
+      - name: Sign and publish to Maven Central
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_IN_MEMORY_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_IN_MEMORY_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          args=("-PreleaseVersion=$SDK_VERSION")
+          if [[ "$BUNDLE_RUNTIME" == true ]]; then
+            args+=("-PdshRuntimeArtifactsDir=$DSH_RUNTIME_ARTIFACTS")
+          fi
+          ./gradlew publishToMavenCentral "${args[@]}" --no-daemon --console=plain
+
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SDK_VERSION: ${{ inputs.version }}
+      RUNTIME_VERSION: ${{ needs.publish.outputs.runtime-version }}
+    steps:
+      - name: Create GitHub release
+        shell: bash
+        run: |
+          {
+            printf 'Maven Central coordinates:\n\n'
+            printf -- '- %s\n' "\`com.elonzh:dshjk:$SDK_VERSION\`"
+            printf -- '- %s\n' "\`com.elonzh:dshjk-spring-boot-starter:$SDK_VERSION\`"
+            if [[ -n "$RUNTIME_VERSION" ]]; then
+              printf -- '- %s (Linux x64/ARM64, macOS x64/ARM64, Windows x64)\n' "\`com.elonzh:dshjk-runtime:$RUNTIME_VERSION\`"
+            fi
+          } > "$RUNNER_TEMP/release-notes.md"
+          gh release create "v$SDK_VERSION" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "v$SDK_VERSION" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" --generate-notes

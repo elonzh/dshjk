@@ -20,10 +20,10 @@ flowchart LR
 
 ## 使用 starter
 
-将 `SDK_VERSION` 替换为所选 SDK 发布版本。
+Starter 与 SDK 使用相同的版本。
 
 ```kotlin
-implementation("com.elonzh:dshjk-spring-boot-starter:SDK_VERSION")
+implementation("com.elonzh:dshjk-spring-boot-starter:0.1.0")
 ```
 
 在已有 Spring Boot 应用中注入客户端：

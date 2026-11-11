@@ -5,6 +5,13 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 description = "DeepSeek Harness SDK for Java and Kotlin"
+if (providers.gradleProperty("releaseVersion").isPresent) {
+    apply(plugin = "com.vanniktech.maven.publish.base")
+}
+java { withJavadocJar() }
+tasks.named<Jar>("javadocJar") {
+    from(rootProject.files("docs/sdk.md", "docs/sdk.zh.md"))
+}
 
 dependencies {
     api(libs.coroutines.core)

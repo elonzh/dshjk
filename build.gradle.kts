@@ -1,3 +1,5 @@
+import com.vanniktech.maven.publish.MavenPublishBaseExtension
+import org.gradle.plugins.signing.SigningExtension
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
 
@@ -5,8 +7,13 @@ plugins {
     alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.kotlin.kapt) apply false
     alias(libs.plugins.kotlin.serialization) apply false
+    alias(libs.plugins.maven.publish.base) apply false
 }
-allprojects { group = "com.elonzh"; version = "0.1.0-SNAPSHOT" }
+val releaseVersion = providers.gradleProperty("releaseVersion").orNull
+require(releaseVersion == null || releaseVersion.matches(Regex("""[0-9]+\.[0-9]+\.[0-9]+"""))) {
+    "releaseVersion must be a stable version such as 0.1.0"
+}
+allprojects { group = "com.elonzh"; version = releaseVersion ?: "0.1.0-SNAPSHOT" }
 val bundledTestRuntime = providers.gradleProperty("dshjkTestRuntimeJar").map { rootProject.file(it) }
 subprojects {
     if (bundledTestRuntime.isPresent && path in setOf(":dshjk", ":examples:spring-boot")) {
@@ -43,12 +50,33 @@ subprojects {
 }
 
 subprojects {
+    plugins.withId("com.vanniktech.maven.publish.base") {
+        extensions.configure<MavenPublishBaseExtension> {
+            publishToMavenCentral(automaticRelease = true)
+            signAllPublications()
+        }
+        extensions.configure<SigningExtension> {
+            setRequired { gradle.taskGraph.allTasks.any { it.project == project && "MavenCentral" in it.name } }
+        }
+    }
     plugins.withId("maven-publish") {
         extensions.configure<PublishingExtension> {
             publications.withType<MavenPublication>().configureEach {
                 pom {
                     name.set(project.name)
                     description.set(provider { project.description ?: "DeepSeek Harness SDK for Java and Kotlin" })
+                    val repositoryUrl = "https://github.com/elonzh/dshjk"
+                    url.set(repositoryUrl)
+                    scm {
+                        url.set(repositoryUrl)
+                        connection.set("scm:git:$repositoryUrl.git")
+                        developerConnection.set("scm:git:ssh://git@github.com/elonzh/dshjk.git")
+                    }
+                    developers { developer {
+                        id.set("elonzh")
+                        name.set("elonzh")
+                        url.set("https://github.com/elonzh")
+                    } }
                     licenses { license {
                         name.set("Apache License, Version 2.0")
                         url.set("https://www.apache.org/licenses/LICENSE-2.0")

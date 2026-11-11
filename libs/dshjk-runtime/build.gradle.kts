@@ -21,13 +21,45 @@ val runtimeVersion = "$dshVersion-$packagingRevision"
 version = runtimeVersion
 
 val upstreamCheckout = providers.gradleProperty("dshRuntimeSourceDir").map { rootProject.file(it) }
+val releaseArtifacts = providers.gradleProperty("dshRuntimeArtifactsDir").map { rootProject.file(it) }
+require(!upstreamCheckout.isPresent || !releaseArtifacts.isPresent) {
+    "Choose either dshRuntimeSourceDir or dshRuntimeArtifactsDir"
+}
+val platforms = listOf("linux-x64", "linux-arm64", "macos-x64", "macos-arm64", "windows-x64")
+val runtimePublication = if (upstreamCheckout.isPresent || releaseArtifacts.isPresent) {
+    publishing.publications.create<MavenPublication>("maven") {
+        pom {
+            packaging = "pom"
+            licenses { license {
+                name.set("MIT License (bundled DeepSeek Harness)")
+                url.set("https://opensource.org/license/mit")
+            } }
+        }
+    }
+} else null
+
+if (releaseArtifacts.isPresent) {
+    require(providers.gradleProperty("releaseVersion").isPresent) {
+        "Set releaseVersion when assembling a runtime release"
+    }
+    platforms.forEach { platform ->
+        val artifactName = "${project.name}-$runtimeVersion-$platform.jar"
+        val files = fileTree(releaseArtifacts.get()) { include("**/$artifactName") }.files
+        require(files.size == 1) { "Expected exactly one $artifactName in ${releaseArtifacts.get()}" }
+        checkNotNull(runtimePublication).artifact(files.single()) {
+            classifier = platform
+            extension = "jar"
+        }
+    }
+    apply(plugin = "com.vanniktech.maven.publish.base")
+}
+
 if (upstreamCheckout.isPresent) {
     val upstream = upstreamCheckout.get()
     val dist = upstream.resolve("dist-exe")
     val notices = listOf(upstream.resolve("LICENSE"), upstream.resolve("THIRD_PARTY_NOTICES.md"))
     require(notices.all(File::isFile)) { "DeepSeek Harness license and notices are missing in $upstream" }
 
-    val platforms = listOf("linux-x64", "linux-arm64", "macos-x64", "macos-arm64", "windows-x64")
     val executables = platforms.mapNotNull { platform ->
         val upstreamPlatform = platform.replace("windows-", "win-")
         val binary = "deepseek-harness-sdk-runtime-$upstreamPlatform"
@@ -96,16 +128,5 @@ if (upstreamCheckout.isPresent) {
         }
     }
     tasks.named("assemble") { dependsOn(runtimeJars) }
-    publishing {
-        publications.create<MavenPublication>("maven") {
-            runtimeJars.forEach { artifact(it) }
-            pom {
-                packaging = "jar"
-                licenses { license {
-                    name.set("MIT License (bundled DeepSeek Harness)")
-                    url.set("https://opensource.org/license/mit")
-                } }
-            }
-        }
-    }
+    runtimeJars.forEach { checkNotNull(runtimePublication).artifact(it) }
 }

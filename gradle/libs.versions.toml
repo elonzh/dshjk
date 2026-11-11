@@ -5,6 +5,7 @@ serialization = "1.9.0"
 junit = "5.12.2"
 spring-boot = "4.1.2"
 spring-ai = "2.0.2"
+maven-publish = "0.35.0"
 [libraries]
 spring-boot-bom = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "spring-boot" }
 spring-boot-starter = { module = "org.springframework.boot:spring-boot-starter" }
@@ -29,3 +30,4 @@ kotlin-reflect = { module = "org.jetbrains.kotlin:kotlin-reflect", version.ref =
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-kapt = { id = "org.jetbrains.kotlin.kapt", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+maven-publish-base = { id = "com.vanniktech.maven.publish.base", version.ref = "maven-publish" }

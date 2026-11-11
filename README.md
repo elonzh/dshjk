@@ -10,11 +10,11 @@ The SDK starts the native `dsh --profile sdk` runtime and communicates with it o
 
 ## Add the dependency
 
-Gradle and Maven use the same SDK coordinates. Replace `SDK_VERSION` with the release version you want to use.
+The SDK is available from Maven Central. Gradle and Maven use the same coordinates.
 
 ```kotlin
 dependencies {
-    implementation("com.elonzh:dshjk:SDK_VERSION")
+    implementation("com.elonzh:dshjk:0.1.0")
 }
 ```
 
@@ -22,7 +22,7 @@ dependencies {
 <dependency>
     <groupId>com.elonzh</groupId>
     <artifactId>dshjk</artifactId>
-    <version>SDK_VERSION</version>
+    <version>0.1.0</version>
 </dependency>
 ```
 
@@ -30,11 +30,11 @@ dependencies {
 
 The SDK can launch `dsh` from PATH or use an executable you specify through `HarnessConfig.runtime`. Set up your model and credentials in dsh before making model requests. The tested compatibility baseline is DeepSeek Harness `0.2.2-rc.1`.
 
-To ship dsh with your application, add the optional runtime dependency and choose the classifier for your **deployment platform**: `linux-x64`, `linux-arm64`, `macos-x64`, `macos-arm64`, or `windows-x64`. The examples below use Linux x64. Set `RUNTIME_VERSION` to a runtime release version in the form `<upstream dsh version>-<packaging revision>`.
+To ship dsh with your application, add the optional runtime dependency and choose the classifier for your **deployment platform**: `linux-x64`, `linux-arm64`, `macos-x64`, `macos-arm64`, or `windows-x64`. The examples below use Linux x64. Runtime versions follow `<upstream dsh version>-<packaging revision>`.
 
 ```kotlin
 dependencies {
-    runtimeOnly("com.elonzh:dshjk-runtime:RUNTIME_VERSION:linux-x64")
+    runtimeOnly("com.elonzh:dshjk-runtime:0.2.2-rc.1-1:linux-x64")
 }
 ```
 
@@ -42,7 +42,7 @@ dependencies {
 <dependency>
     <groupId>com.elonzh</groupId>
     <artifactId>dshjk-runtime</artifactId>
-    <version>RUNTIME_VERSION</version>
+    <version>0.2.2-rc.1-1</version>
     <classifier>linux-x64</classifier>
     <scope>runtime</scope>
 </dependency>

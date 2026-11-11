@@ -20,10 +20,10 @@ flowchart LR
 
 ## Add the starter
 
-Replace `SDK_VERSION` with the SDK release version you want to use.
+Use the same version as the SDK.
 
 ```kotlin
-implementation("com.elonzh:dshjk-spring-boot-starter:SDK_VERSION")
+implementation("com.elonzh:dshjk-spring-boot-starter:0.1.0")
 ```
 
 Inject the client into your Spring Boot application:
