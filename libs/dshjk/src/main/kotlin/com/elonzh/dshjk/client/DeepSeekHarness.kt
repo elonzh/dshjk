@@ -1,27 +1,29 @@
 package com.elonzh.dshjk.client
 
+import com.elonzh.dshjk.cli.HarnessCli
 import com.elonzh.dshjk.configuration.HarnessConfig
 import com.elonzh.dshjk.protocol.*
+import com.elonzh.dshjk.runtime.internal.DshRuntime
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-/** One lazily initialized runtime, shared by multiple independent sessions. Always close the owner. */
+/** A configured DSH runtime with a lazily initialized SDK process for agent sessions. */
 class DeepSeekHarness @JvmOverloads constructor(val config: HarnessConfig = HarnessConfig()) : AutoCloseable {
-    val client = HarnessClient(config)
+    private val runtime = DshRuntime(config)
+    val client = HarnessClient(config, runtime)
+    val cli = HarnessCli(runtime)
     private val lifecycle = Mutex()
     private var initialized: InitializeResult? = null
-    private var closed = false
     @JvmSynthetic suspend fun start(): InitializeResult = lifecycle.withLock {
-        check(!closed) { "Harness closed" }
+        runtime.checkOpen()
         initialized?.let { return@withLock it }
         try {
             client.initialize(InitializeParams(config.cwd.toAbsolutePath().normalize().toString(), config.provider, config.model,
                 config.reasoningEffort, config.maxTokens, config.approvalHandler?.let { true }, config.userQuestionHandler?.let { Capabilities() }))
                 .also { initialized = it }
         } catch (error: Throwable) {
-            closed = true
-            try { client.closeAsync() } catch (cleanup: Throwable) { error.addSuppressed(cleanup) }
+            try { closeRuntime() } catch (cleanup: Throwable) { error.addSuppressed(cleanup) }
             throw error
         }
     }
@@ -41,10 +43,14 @@ class DeepSeekHarness @JvmOverloads constructor(val config: HarnessConfig = Harn
         session(sessionId).runStreaming(input, observer)
     @JvmSynthetic suspend fun runStreaming(input: List<ContentBlock>, sessionId: String? = null, observer: NotificationObserver? = null): RunSummary =
         session(sessionId).runStreaming(input, observer)
-    @JvmSynthetic suspend fun closeAsync() = withContext(NonCancellable) {
+    @JvmSynthetic suspend fun closeAsync() {
         // Teardown must not wait for an initialize response holding lifecycle.
-        client.closeAsync()
-        lifecycle.withLock { closed = true }
+        closeRuntime()
+        withContext(NonCancellable) { lifecycle.withLock { initialized = null } }
+    }
+    private suspend fun closeRuntime() = withContext(NonCancellable) {
+        runtime.stopAccepting()
+        try { client.closeAsync() } finally { runtime.awaitCommands() }
     }
     override fun close() = runBlocking { closeAsync() }
     @JvmName("start") fun startBlocking(): InitializeResult = runBlocking { start() }

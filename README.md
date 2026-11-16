@@ -121,6 +121,8 @@ In Java, start with `HarnessConfig.builder()`, set any of `cwd`, `dshHome`, or `
 
 See the [SDK guide](docs/sdk.md) for session recovery, event subscriptions, and the full configuration reference.
 
+The SDK can also run DSH CLI profiles and store native attachments for agent inputs. See the [command and attachment APIs](docs/sdk.md#dsh-commands-and-attachments).
+
 ## Spring Boot 4 and Spring AI
 
 Add the optional [Spring Boot starter](docs/spring.md#add-the-starter) to inject a Spring-managed `DeepSeekHarness`.

@@ -8,18 +8,20 @@
 
 ```mermaid
 flowchart LR
-  Application[Java / Kotlin 应用] --> Session[DeepSeekHarness / HarnessSession]
-  Session --> Client[HarnessClient]
-  Client --> Transport[内部 RuntimeConnection]
-  Transport -->|双向 JSONL RPC / stdio| Runtime[原生 dsh profile]
-  Runtime --> Plugins[Cordis plugins / MCP / 模型]
-  Runtime --> Home[原生 home 发现 / 持久化]
-  Client --> Protocol[protocol / configuration / error]
+  App["Java / Kotlin 应用"] --> Harness["DeepSeekHarness"]
+  Harness --> Client["HarnessClient / HarnessSession"]
+  Harness --> Cli["HarnessCli"]
+  App --> Attachments["AttachmentStore"]
+  Attachments --> Cli
+  Client --> Runtime["共用 DSH 进程层"]
+  Cli --> Runtime
+  Runtime --> SDK["dsh · SDK profile"]
+  Runtime --> Command["dsh · 命令 profile"]
 ```
 
-`protocol` 定义 wire 模型和边界解析；`configuration` 定义启动参数；`client/internal` 独占进程、stdio、RPC 关联、回调与事件分发。`HarnessClient` 暴露协议操作，`DeepSeekHarness` 负责一次初始化，`HarnessSession` 负责输入活动的收集。两种语言共享这些类型和实现；Java 阻塞入口委托 suspend 方法，使用 `@JvmSynthetic` 隐藏 Continuation 签名。
+`configuration` 定义启动参数，`runtime/internal` 管理进程启动、终止和临时文件。`client/internal` 处理 stdio JSON-RPC、请求关联、回调与事件分发。`DeepSeekHarness` 负责初始化和关闭，`HarnessSession` 收集每次输入触发的活动。Java 的阻塞方法委托给 Kotlin 的挂起方法。
 
-一个 Harness 对应一个子进程，可管理多个 Session。运行时拥有 Agent loop、Session history、模型路由、工具、审批策略、工作目录、goal/plan 状态及持久化；SDK 仅保存初始化状态、RPC 等待项、Session 句柄和通知订阅。`DeepSeekHarness()` 可直接使用默认配置。`session()` 是惰性句柄，自动生成官方 SDK 格式的 `session-<32 位十六进制 UUID>`；相同句柄上的多次输入继续同一会话。`run(input)` 每次创建新会话，显式 `session(id)` 则使用调用者提供的 ID。SDK 协议要求请求携带 ID，自动生成逻辑集中在创建句柄时，与官方客户端一致。
+一个 Harness 的 Agent 会话共用一个 SDK profile 子进程。运行时拥有 Agent loop、Session history、模型路由、工具、审批策略、工作目录、goal/plan 状态及持久化；SDK 仅保存初始化状态、RPC 等待项、Session 句柄和通知订阅。`DeepSeekHarness()` 可直接使用默认配置。`session()` 是惰性句柄，自动生成官方 SDK 格式的 `session-<32 位十六进制 UUID>`；相同句柄上的多次输入继续同一会话。`run(input)` 每次创建新会话，显式 `session(id)` 则使用调用者提供的 ID。SDK 协议要求请求携带 ID，自动生成逻辑集中在创建句柄时，与官方客户端一致。
 
 ## 完整 SDK 操作
 
@@ -146,7 +148,7 @@ Java 使用 builder 的同名方法和相同 SAM 接口。`approval/request` 返
 
 配置通过可省略的 `HarnessConfig()` 或 Java `HarnessConfig.builder()` 创建，集合在边界复制为不可修改值，内联 patch 的 JSON 在构造配置时形成快照。省略 `dshHome` 时，SDK 保留子进程环境，由运行时解析 home，包括空白环境值回退和 `~` 展开；SDK 不在 JVM 内复制发现算法。启动参数按 argv 传递，不经 shell 解释；`RuntimeCommand.of` 支持显式 launcher 前缀，例如自定义 Node loader。SDK 不修改宿主全局环境。
 
-Kotlin 用 `closeAsync()`，Java 用 try-with-resources 的 `close()`；两者执行同一关闭实现。关闭先停止宿主回调，在时限内尝试发送 shutdown 并等待 stdin EOF 清理。随后直接向根运行时进程发送终止信号，必要时强制终止，并确认进程已退出。关闭幂等且终态，不能重新启动。Kotlin 的关闭使用 NonCancellable 以完成资源回收。
+Kotlin 的 `closeAsync()` 和 Java 的 `close()` 使用同一关闭实现。关闭 harness 会取消正在执行的 CLI 和附件调用。RPC 客户端停止宿主回调，在时限内尝试发送 `shutdown` 并等待 stdin EOF 清理。进程层终止仍在运行的进程，包括终止时可见的后代，并确认退出。插件负责释放自己创建的资源。关闭幂等且不可重启，Kotlin 的关闭在 `NonCancellable` 中执行。
 
 本地请求超时或协程取消会撤回尚未开始的发送，移除等待项并忽略迟到响应。已开始写入的请求仍可能由运行时执行。要中止整个运行时须关闭其拥有者。SDK 不加入无依据的 Session abort 方法。
 
@@ -201,6 +203,59 @@ Java 使用相同数据类构造器、`HarnessPatch.providers(...)` / `mcpServer
 已有 YAML/JSON 文件使用 `HarnessConfig(patchFiles = listOf(Path.of("tools.patch.yml")))` 或 `builder.patchFiles(...)`。SDK 首次启动子进程时才把全部内联操作写入一个私有临时目录中的 JSON 文件，之后依次传递 `patchFiles`，所以原始文件可覆盖内联配置。启动失败会清理生成文件；正常关闭、初始化失败或异常退出后的 `close()` 在确认子进程退出后清理它们。用户文件由调用者维护。每个客户端独立拥有生成文件，创建配置或 Spring 容器不会创建这些文件。
 
 持久化工具与 MCP 配置归 profile；调用级 patch 在本客户端下次启动时生效。配置覆盖采用原生的完整替换规则，覆盖 `llm-pi-ai` 时要提供希望保留的全部 providers。
+
+## DSH 命令与附件
+
+`harness.cli.execute(ProfileInvocation(...))` 执行指定的 DSH profile。RPC 与 CLI 共用可执行文件、`processCwd`、环境变量及 `DSH_HOME` 配置。DSH 根据 profile、home 和启动时的 patch 装配插件。CLI 调用各自指定内联 patch 和 patch 文件，按此顺序应用。应用参数通过 `--` 交给 profile。
+
+```kotlin
+import com.elonzh.dshjk.configuration.ProfileInvocation
+
+val result = harness.cli.execute(ProfileInvocation("headless", listOf("--help")))
+check(result.exitCode == 0) { result.stderr }
+println(result.stdout)
+```
+
+`execute` 默认提供空 stdin，也可传入 `input: Path`。默认以 UTF-8 捕获 stdout 和 stderr，各限 1 MiB。传入 `output: Path` 时 stdout 直接写到该文件，结果中的 `stdout` 为 `null`，命令失败时文件可能保留部分输出。正常退出返回 `CliResult`，包括非零退出码。启动或捕获输出失败抛出 `CliException`，超时抛出 `RequestTimeoutException`，命令默认超时为 30 秒。
+
+命令每次启动独立进程，可在 SDK 会话启动前调用。
+
+应用可以在 DSH profile 中安装插件，也可以用 `ProfileInvocation.patches` 在本次启动时挂载插件。命令插件通过 `ctx.cmdlineArgs` 获取参数，在 `ctx.appReady` 后执行，并用 `ctx.appExit` 退出。[DSH 命令行插件指南](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/basic/publish.md#give-a-surface-bundle-its-own-command-line)
+
+### 存取附件
+
+使用 `sdk` 或 `sdk-minimal` 时，按需创建 `AttachmentStore(harness)`。附件命令在独立进程中复用 SDK profile 及其 patch，通过该 profile 的 `attachments` 服务存取附件。自定义命令 profile 只需提供此服务，即可用 `AttachmentStore(harness.cli, invocation)` 接入。该调用的应用参数应为空，由附件适配器提供命令参数并占用标准输入输出。若修改了磁盘上的存储配置，请重建 harness，使会话和新启动的附件命令使用同一份配置。
+
+```kotlin
+import com.elonzh.dshjk.attachment.AttachmentStore
+
+val config = HarnessConfig(dshHome = Path.of("/data/dsh"), profile = "sdk-minimal")
+DeepSeekHarness(config).use { harness ->
+    val attachments = AttachmentStore(harness)
+    val image = attachments.saveImage(Path.of("screenshot.png"), ImageMediaType.IMAGE_PNG)
+    val file = attachments.saveFile(Path.of("data.csv"))
+    harness.run(listOf(ContentBlock.Text("分析这些附件"), ContentBlock.Image(image), ContentBlock.File(file)))
+    attachments.readFile(file, Path.of("download.csv"))
+}
+```
+
+保存返回 DSH 原生附件引用。DSH 校验并标准化图片，普通文件保留原始字节。读取校验成功后才替换目标文件。`AttachmentException.code` 提供原生错误码，可区分 `INVALID_IMAGE`、`ATTACHMENT_NOT_FOUND` 和 `ATTACHMENT_CORRUPT` 等错误。普通文件在模型输入中以引用表示，读取其内容需要相应的工具。宿主应用负责授权、配额和保留期限。
+
+### 按附件 ID 下载文件
+
+保存成功后，将 `FileAttachment` 与应用中授予访问权限的记录一并持久化。DSH 读取时需要包含 ID、文件名和字节数的引用。同一份字节以不同文件名保存时可能共享 ID，因此查找应限定在当前请求有权访问的范围内。[DSH 附件服务接口](https://github.com/deepseek-ai/deepseek-harness/blob/fcc0ad4621/packages/attachment/attachment/src/index.ts)
+
+Java 下载处理器可以调用阻塞方法。示例中的 `fileLookup` 根据当前请求查找有权访问的引用，找不到时返回 `null`。在写出响应之前捕获 `ATTACHMENT_NOT_FOUND` 并映射到 404。
+
+```java
+try (var stream = attachments.openFile(attachmentId, fileLookup)) {
+    response.setContentType("application/octet-stream");
+    response.setContentLengthLong(stream.getAttachment().getBytes());
+    stream.transferTo(response.getOutputStream());
+}
+```
+
+已有引用时可直接调用 `openFile(FileAttachment)`。两个重载都在 DSH 校验并写入临时文件后返回流，关闭流会删除临时文件。这样可以在发送响应头之前处理校验失败，下载也无需把整个文件载入内存。Kotlin 调用对应的挂起方法，并用 `use { ... }` 关闭流。
 
 ## 兼容与验证边界
 

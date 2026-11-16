@@ -1,4 +1,4 @@
-package com.elonzh.dshjk.client.internal
+package com.elonzh.dshjk.runtime.internal
 
 import com.elonzh.dshjk.configuration.RuntimeCommand
 import kotlinx.serialization.Serializable

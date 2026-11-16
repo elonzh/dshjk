@@ -8,18 +8,20 @@
 
 ```mermaid
 flowchart LR
-  Application[Java / Kotlin application] --> Session[DeepSeekHarness / HarnessSession]
-  Session --> Client[HarnessClient]
-  Client --> Transport[Internal RuntimeConnection]
-  Transport -->|Bidirectional JSONL RPC over stdio| Runtime[Native dsh profile]
-  Runtime --> Plugins[Cordis plugins / MCP / models]
-  Runtime --> Home[Native home discovery / persistence]
-  Client --> Protocol[protocol / configuration / error]
+  App["Java / Kotlin application"] --> Harness["DeepSeekHarness"]
+  Harness --> Client["HarnessClient / HarnessSession"]
+  Harness --> Cli["HarnessCli"]
+  App --> Attachments["AttachmentStore"]
+  Attachments --> Cli
+  Client --> Runtime["Shared DSH process layer"]
+  Cli --> Runtime
+  Runtime --> SDK["dsh · SDK profile"]
+  Runtime --> Command["dsh · command profile"]
 ```
 
-`protocol` defines the wire models and parses incoming data. `configuration` defines the startup options. `client/internal` owns the process, stdio, RPC correlation, callbacks, and event dispatch. `HarnessClient` exposes the protocol operations, `DeepSeekHarness` manages initialization, and `HarnessSession` collects the activity associated with an input. Both languages share these types and implementations. The Java blocking methods delegate to suspending methods whose `Continuation` signatures are hidden from Java with `@JvmSynthetic`.
+`configuration` defines launch inputs, and `runtime/internal` handles process startup, termination, and temporary files. `client/internal` handles stdio JSON-RPC, request correlation, callbacks, and event delivery. `DeepSeekHarness` manages initialization and closure, and `HarnessSession` collects the activity associated with an input. The Java blocking methods delegate to the Kotlin suspending methods.
 
-Each harness owns one child process and can manage multiple sessions. The runtime owns the agent loop, session history, model routing, tools, approval policies, working directories, goals and plans, and persistence. The SDK tracks initialization, pending RPCs, session handles, and notification subscriptions. `DeepSeekHarness()` works with the default configuration. `session()` creates a lazy handle and generates an ID in the official SDK format: `session-` followed by 32 hexadecimal UUID digits. Reusing the handle continues the same session. `run(input)` creates a new session each time; `session(id)` uses the ID supplied by the caller. The protocol requires an ID in each session request, so the SDK generates it when it creates the handle, as the official client does.
+An SDK profile child process can host multiple agent sessions for one harness. The runtime owns the agent loop, session history, model routing, tools, approval policies, working directories, goals and plans, and persistence. The SDK tracks initialization, pending RPCs, session handles, and notification subscriptions. `DeepSeekHarness()` works with the default configuration. `session()` creates a lazy handle and generates an ID in the official SDK format: `session-` followed by 32 hexadecimal UUID digits. Reusing the handle continues the same session. `run(input)` creates a new session each time; `session(id)` uses the ID supplied by the caller. The protocol requires an ID in each session request, so the SDK generates it when it creates the handle, as the official client does.
 
 ## SDK operations
 
@@ -146,7 +148,7 @@ All timeouts use `java.time.Duration`. Use `HarnessConfig(requestTimeout = Durat
 
 Build the configuration with `HarnessConfig()` or Java's `HarnessConfig.builder()`; all settings are optional. The SDK makes immutable copies of collections and snapshots inline patch JSON when building the configuration. If `dshHome` is unset, the SDK preserves the child process environment and lets the runtime resolve its home, including handling blank variables and expanding `~`. Arguments are passed directly as argv without shell interpretation. Use `RuntimeCommand.of` for an explicit launcher prefix, such as a custom Node loader. The SDK does not modify the host environment.
 
-Kotlin's `closeAsync()` and Java's `close()` (including try-with-resources) use the same shutdown implementation. It stops host callbacks, then tries to send `shutdown` and allows the runtime to clean up after stdin reaches EOF, within the configured time limits. If needed, it signals the root runtime process directly, escalates to forcible termination, and confirms the process has exited. Closing is idempotent and terminal. Kotlin shutdown runs in `NonCancellable` to finish releasing resources.
+Kotlin's `closeAsync()` and Java's `close()` (including try-with-resources) use the same shutdown implementation. Closing a harness cancels active CLI and attachment calls. The RPC client stops host callbacks, tries to send `shutdown`, and allows the runtime to clean up after stdin reaches EOF. The process layer terminates processes that remain active, including descendants visible during termination, and confirms they have exited. Plugins own the resources they create. Closing is idempotent and terminal, and Kotlin shutdown runs in `NonCancellable`.
 
 A local request timeout or coroutine cancellation withdraws any send that has not started, removes the pending request, and ignores late responses. The runtime can still execute a request once writing has started. Close the owner to stop the entire runtime. The SDK exposes no session abort operation.
 
@@ -201,6 +203,59 @@ In Java, use the same constructors, `HarnessPatch.providers(...)`, `HarnessPatch
 For existing YAML or JSON files, use `HarnessConfig(patchFiles = listOf(Path.of("tools.patch.yml")))` or `builder.patchFiles(...)`. On first process launch, the SDK writes the inline operations to one JSON file in a private temporary directory, then passes the files from `patchFiles` in order. This lets those files override inline operations. The SDK cleans up generated files if launch fails and after the child process has exited during shutdown, including when initialization fails or `close()` follows an unexpected exit. The caller owns user-supplied files. Each client owns its generated files; building a config or starting the Spring context does not generate them.
 
 Keep persistent tool and MCP configuration in the profile. Patches supplied in a client's configuration take effect on its next launch. The runtime replaces the entire configuration of an overridden entry, so include every provider you want to keep when overriding `llm-pi-ai`.
+
+## DSH commands and attachments
+
+`harness.cli.execute(ProfileInvocation(...))` runs a DSH profile. RPC and CLI share the executable, `processCwd`, environment, and `DSH_HOME` settings. DSH composes plugins from the profile, home, and launch patches. Each CLI invocation specifies its own inline patches and patch files, applied in that order. Arguments after `--` reach the application plugin.
+
+```kotlin
+import com.elonzh.dshjk.configuration.ProfileInvocation
+
+val result = harness.cli.execute(ProfileInvocation("headless", listOf("--help")))
+check(result.exitCode == 0) { result.stderr }
+println(result.stdout)
+```
+
+`execute` provides empty stdin by default or reads from an `input: Path`. It captures UTF-8 stdout and stderr up to 1 MiB each. With an `output: Path`, stdout goes directly to that file and the result's `stdout` is `null`. A failed command may leave partial output in that file. An ordinary exit returns a `CliResult`, including nonzero exit codes. Launch or capture failures throw `CliException`. A timeout throws `RequestTimeoutException` and defaults to 30 seconds.
+
+Each command launches a process and can run before the SDK session process starts.
+
+Install plugins in a DSH profile or add them for a single launch with `ProfileInvocation.patches`. A command plugin reads `ctx.cmdlineArgs`, runs after `ctx.appReady`, and exits via `ctx.appExit`. [DSH CLI plugin guide](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/basic/publish.md#give-a-surface-bundle-its-own-command-line)
+
+### Store and retrieve attachments
+
+Create an `AttachmentStore(harness)` to opt in when using `sdk` or `sdk-minimal`. Each command reuses the SDK profile and patches in a separate process and accesses that profile's `attachments` service. To use a custom command profile that provides this service, pass `harness.cli` and a `ProfileInvocation` with empty application arguments to `AttachmentStore`. The store supplies the command arguments and owns standard I/O. Recreate the harness after changing storage configuration on disk so sessions and newly launched commands use the same settings.
+
+```kotlin
+import com.elonzh.dshjk.attachment.AttachmentStore
+
+val config = HarnessConfig(dshHome = Path.of("/data/dsh"), profile = "sdk-minimal")
+DeepSeekHarness(config).use { harness ->
+    val attachments = AttachmentStore(harness)
+    val image = attachments.saveImage(Path.of("screenshot.png"), ImageMediaType.IMAGE_PNG)
+    val file = attachments.saveFile(Path.of("data.csv"))
+    harness.run(listOf(ContentBlock.Text("Inspect these attachments"), ContentBlock.Image(image), ContentBlock.File(file)))
+    attachments.readFile(file, Path.of("download.csv"))
+}
+```
+
+Save operations return native DSH attachment references. DSH validates and normalizes images and preserves ordinary file bytes. A read replaces the destination after successful verification. `AttachmentException.code` preserves native codes such as `INVALID_IMAGE`, `ATTACHMENT_NOT_FOUND`, and `ATTACHMENT_CORRUPT`. DSH presents ordinary files to the model as references. Reading their contents requires a tool that can handle the file. The host application owns authorization, quotas, and retention.
+
+### Download a file by attachment ID
+
+Persist the `FileAttachment` returned by `saveFile` with the application record that grants access to the file. DSH reads a reference containing the ID, filename, and byte count. Identical bytes can have the same ID under multiple filenames, so resolve the reference within the current request's authorized scope. [DSH attachment store contract](https://github.com/deepseek-ai/deepseek-harness/blob/fcc0ad4621/packages/attachment/attachment/src/index.ts)
+
+The Java blocking API can be used in a download handler as follows. `fileLookup` supplies the reference for the current request and returns `null` when the file is unavailable. Map `AttachmentException` with code `ATTACHMENT_NOT_FOUND` to a 404 before writing the response.
+
+```java
+try (var stream = attachments.openFile(attachmentId, fileLookup)) {
+    response.setContentType("application/octet-stream");
+    response.setContentLengthLong(stream.getAttachment().getBytes());
+    stream.transferTo(response.getOutputStream());
+}
+```
+
+`openFile(FileAttachment)` also accepts a reference the caller has already resolved. Both overloads return a stream after DSH verifies the bytes into a private temporary file. Closing the stream removes the file. This lets the handler report verification failures before sending headers and keeps download memory usage independent of file size. Kotlin uses the suspending overloads with `use { ... }`.
 
 ## Compatibility and verification
 

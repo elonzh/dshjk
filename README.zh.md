@@ -121,6 +121,8 @@ Java 使用 `HarnessConfig.builder()`，按需设置 `cwd`、`dshHome` 或 `runt
 
 会话恢复、事件订阅与完整配置见 [SDK 文档](docs/sdk.zh.md)。
 
+SDK 也支持运行 DSH CLI profile，并为 Agent 输入存取原生附件。用法见[命令与附件 API](docs/sdk.zh.md#dsh-命令与附件)。
+
 ## Spring Boot 4 与 Spring AI
 
 添加可选 [Spring Boot Starter](docs/spring.zh.md#使用-starter) 后，可直接注入由 Spring 管理的 `DeepSeekHarness`。

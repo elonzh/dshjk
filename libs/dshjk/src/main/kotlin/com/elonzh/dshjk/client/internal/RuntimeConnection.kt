@@ -4,6 +4,8 @@ import com.elonzh.dshjk.client.NotificationSubscription
 import com.elonzh.dshjk.configuration.HarnessConfig
 import com.elonzh.dshjk.error.*
 import com.elonzh.dshjk.protocol.*
+import com.elonzh.dshjk.runtime.internal.DshProcess
+import com.elonzh.dshjk.runtime.internal.DshRuntime
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -16,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
-internal class RuntimeConnection(private val config: HarnessConfig) {
+internal class RuntimeConnection(private val config: HarnessConfig, private val runtime: DshRuntime) {
     private val stateLock = Any()
     private val writeLock = Mutex()
     private val closeMutex = Mutex()
@@ -30,7 +32,7 @@ internal class RuntimeConnection(private val config: HarnessConfig) {
     @Volatile private var closing = false
     @Volatile private var disposed = false
     @Volatile private var process: Process? = null
-    private var patchFiles: RuntimePatchFiles? = null
+    private var launched: DshProcess? = null
     private var writer: BufferedWriter? = null
     private var readerThread: Thread? = null
     private var stderrThread: Thread? = null
@@ -44,21 +46,10 @@ internal class RuntimeConnection(private val config: HarnessConfig) {
     fun start() = synchronized(stateLock) {
         checkUsable()
         if (process != null) return@synchronized
-        var executable = config.runtime.executable
         val child = try {
-            val runtime = BundledRuntime.resolve(config.runtime)
-            executable = runtime.executable
-            val files = RuntimePatchFiles(config).also { patchFiles = it }
-            val argv = listOf(executable) + runtime.arguments + listOf("--profile", config.profile) +
-                files.paths.flatMap { listOf("--patch", it.toString()) }
-            val builder = ProcessBuilder(argv).directory(config.processCwd.toAbsolutePath().normalize().toFile())
-            if (!config.inheritEnvironment) builder.environment().clear()
-            builder.environment().putAll(config.environment)
-            config.dshHome?.let { builder.environment()["DSH_HOME"] = it.toAbsolutePath().normalize().toString() }
-            builder.start()
+            runtime.launch(config.sdkInvocation).also { launched = it }.process
         } catch (error: Exception) {
-            try { patchFiles?.close() } catch (cleanup: Exception) { error.addSuppressed(cleanup) }
-            val failure = diagnostic("Cannot start $executable: ${error.message}", error)
+            val failure = diagnostic("Cannot start ${config.runtime.executable}: ${error.message}", error)
             fail(failure)
             throw failure
         }
@@ -232,25 +223,19 @@ internal class RuntimeConnection(private val config: HarnessConfig) {
             val child = process
             try {
                 if (child != null && child.isAlive) {
+                    launched?.trackDescendants()
                     runCatching { request(SdkRequestMethod.SHUTDOWN.wireName, timeout = config.shutdownTimeout, allowClosing = true) }
                     // Closing stdin can itself wait for an in-flight write. Give EOF a bounded grace period.
                     scope.launch { writeLock.withLock { runCatching { child.outputStream.close() } } }
-                    if (!child.waitFor(config.eofGrace.toMillis(), TimeUnit.MILLISECONDS)) {
-                        // Process.destroy() can close the pipe streams synchronously on the JDK.
-                        val handle = child.toHandle()
-                        handle.destroy()
-                        val terminateGraceMillis = config.terminateGrace.toMillis()
-                        if (!child.waitFor(terminateGraceMillis, TimeUnit.MILLISECONDS)) {
-                            handle.destroyForcibly()
-                            if (!child.waitFor(terminateGraceMillis, TimeUnit.MILLISECONDS)) {
-                                throw diagnostic("Runtime termination could not be confirmed")
-                            }
-                        }
-                    }
+                    child.waitFor(config.eofGrace.toMillis(), TimeUnit.MILLISECONDS)
+                }
+                try {
+                    launched?.close()
+                } catch (error: java.io.IOException) {
+                    throw diagnostic("Runtime cleanup failed: ${error.message}", error)
                 }
                 readerThread?.join(500)
                 stderrThread?.join(500)
-                patchFiles?.close()
                 disposed = true
             } finally {
                 fail(diagnostic("Client closed"))

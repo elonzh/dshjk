@@ -37,12 +37,11 @@ class HarnessConfig(
     val userQuestionHandler: UserQuestionHandler? = null,
     patchFiles: List<Path> = emptyList(),
 ) {
-    val patches: List<HarnessPatch> = java.util.List.copyOf(patches)
-    internal val patchDocument = kotlinx.serialization.json.JsonArray(this.patches.map { it.toJson() }).toString()
-    val patchFiles: List<Path> = java.util.List.copyOf(patchFiles.map { it.toAbsolutePath().normalize() })
+    internal val sdkInvocation = ProfileInvocation(profile, patches = patches, patchFiles = patchFiles)
+    val patches: List<HarnessPatch> get() = sdkInvocation.patches
+    val patchFiles: List<Path> get() = sdkInvocation.patchFiles
     val environment: Map<String, String> = java.util.Map.copyOf(environment)
     init {
-        require(profile.isNotBlank() && !profile.startsWith("-")) { "Invalid profile" }
         require(provider.isNotBlank() && model.isNotBlank())
         require(reasoningEffort == null || reasoningEffort.isNotBlank())
         require(maxTokens == null || maxTokens > 0)

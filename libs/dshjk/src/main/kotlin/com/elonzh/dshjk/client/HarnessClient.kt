@@ -4,13 +4,16 @@ import com.elonzh.dshjk.client.internal.RuntimeConnection
 import com.elonzh.dshjk.configuration.HarnessConfig
 import com.elonzh.dshjk.error.ProtocolException
 import com.elonzh.dshjk.protocol.*
+import com.elonzh.dshjk.runtime.internal.DshRuntime
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import java.time.Duration
 
 /** Low-level native SDK operations. Initialize once before creating or restoring sessions. */
-class HarnessClient @JvmOverloads constructor(val config: HarnessConfig = HarnessConfig()) : AutoCloseable {
-    private val connection = RuntimeConnection(config)
+class HarnessClient internal constructor(val config: HarnessConfig, runtime: DshRuntime) : AutoCloseable {
+    @JvmOverloads constructor(config: HarnessConfig = HarnessConfig()) : this(config, DshRuntime(config))
+
+    private val connection = RuntimeConnection(config, runtime)
     val pid: Long? get() = connection.pid
     val isAlive: Boolean get() = connection.isAlive
     fun stderr(): String = connection.stderr()
