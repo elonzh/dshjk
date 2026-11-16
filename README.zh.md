@@ -14,7 +14,7 @@ SDK 可从 Maven Central 获取。Gradle 和 Maven 使用相同的制品坐标�
 
 ```kotlin
 dependencies {
-    implementation("com.elonzh:dshjk:0.1.0")
+    implementation("com.elonzh:dshjk:0.2.0")
 }
 ```
 
@@ -22,7 +22,7 @@ dependencies {
 <dependency>
     <groupId>com.elonzh</groupId>
     <artifactId>dshjk</artifactId>
-    <version>0.1.0</version>
+    <version>0.2.0</version>
 </dependency>
 ```
 

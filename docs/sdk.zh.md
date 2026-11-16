@@ -241,6 +241,20 @@ DeepSeekHarness(config).use { harness ->
 
 保存返回 DSH 原生附件引用。DSH 校验并标准化图片，普通文件保留原始字节。读取校验成功后才替换目标文件。`AttachmentException.code` 提供原生错误码，可区分 `INVALID_IMAGE`、`ATTACHMENT_NOT_FOUND` 和 `ATTACHMENT_CORRUPT` 等错误。普通文件在模型输入中以引用表示，读取其内容需要相应的工具。宿主应用负责授权、配额和保留期限。
 
+### 读取图片流
+
+`openImage(ImageAttachment)` 返回经过校验的标准化图片流。HTTP 处理器可以用引用中的媒体类型和字节数设置响应头，关闭流时会删除临时文件。
+
+```java
+try (var stream = attachments.openImage(image)) {
+    response.setContentType(image.getMediaType().getWireName());
+    response.setContentLengthLong(image.getBytes());
+    stream.transferTo(response.getOutputStream());
+}
+```
+
+Kotlin 调用挂起的 `openImage`，并用 `use { ... }` 关闭流。
+
 ### 按附件 ID 下载文件
 
 保存成功后，将 `FileAttachment` 与应用中授予访问权限的记录一并持久化。DSH 读取时需要包含 ID、文件名和字节数的引用。同一份字节以不同文件名保存时可能共享 ID，因此查找应限定在当前请求有权访问的范围内。[DSH 附件服务接口](https://github.com/deepseek-ai/deepseek-harness/blob/fcc0ad4621/packages/attachment/attachment/src/index.ts)

@@ -23,7 +23,7 @@ flowchart LR
 Use the same version as the SDK.
 
 ```kotlin
-implementation("com.elonzh:dshjk-spring-boot-starter:0.1.0")
+implementation("com.elonzh:dshjk-spring-boot-starter:0.2.0")
 ```
 
 Inject the client into your Spring Boot application:

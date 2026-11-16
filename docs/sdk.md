@@ -241,6 +241,20 @@ DeepSeekHarness(config).use { harness ->
 
 Save operations return native DSH attachment references. DSH validates and normalizes images and preserves ordinary file bytes. A read replaces the destination after successful verification. `AttachmentException.code` preserves native codes such as `INVALID_IMAGE`, `ATTACHMENT_NOT_FOUND`, and `ATTACHMENT_CORRUPT`. DSH presents ordinary files to the model as references. Reading their contents requires a tool that can handle the file. The host application owns authorization, quotas, and retention.
 
+### Serve a stored image
+
+`openImage(ImageAttachment)` returns an `InputStream` for the verified, normalized image. Set the response headers from the attachment reference, and close the stream to remove its temporary copy.
+
+```java
+try (var stream = attachments.openImage(image)) {
+    response.setContentType(image.getMediaType().getWireName());
+    response.setContentLengthLong(image.getBytes());
+    stream.transferTo(response.getOutputStream());
+}
+```
+
+In Kotlin, call the suspending `openImage` and close it with `use { ... }`.
+
 ### Download a file by attachment ID
 
 Persist the `FileAttachment` returned by `saveFile` with the application record that grants access to the file. DSH reads a reference containing the ID, filename, and byte count. Identical bytes can have the same ID under multiple filenames, so resolve the reference within the current request's authorized scope. [DSH attachment store contract](https://github.com/deepseek-ai/deepseek-harness/blob/fcc0ad4621/packages/attachment/attachment/src/index.ts)

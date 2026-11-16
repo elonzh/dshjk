@@ -43,11 +43,7 @@ fun interface FileAttachmentLookup {
 class FileAttachmentStream internal constructor(
     val attachment: FileAttachment,
     input: InputStream,
-    private val files: RuntimeFiles,
-) : FilterInputStream(input) {
-    @Synchronized
-    override fun close() = files.use { super.close() }
-}
+) : FilterInputStream(input)
 
 /** Optional adapter for a DSH profile's attachments service. */
 class AttachmentStore private constructor(
@@ -91,19 +87,33 @@ class AttachmentStore private constructor(
         read("read-file", HarnessProtocol.json.encodeToString(FileAttachment.serializer(), attachment), destination)
 
     /**
+     * Opens a verified, normalized image. Use the attachment's media type and byte count
+     * for the response headers. Closing the stream removes its temporary copy.
+     */
+    @JvmSynthetic suspend fun openImage(attachment: ImageAttachment): InputStream =
+        open("read-image", HarnessProtocol.json.encodeToString(ImageAttachment.serializer(), attachment))
+
+    /**
      * Opens a file after DSH verifies it. The returned stream reads from disk without holding
      * the DSH process open. The caller must close it, including if an HTTP response is aborted.
      */
-    @JvmSynthetic suspend fun openFile(attachment: FileAttachment): FileAttachmentStream {
-        val files = RuntimeFiles("dshjk-file-")
-        var opened: FileAttachmentStream? = null
+    @JvmSynthetic suspend fun openFile(attachment: FileAttachment): FileAttachmentStream =
+        FileAttachmentStream(attachment, open("read-file",
+            HarnessProtocol.json.encodeToString(FileAttachment.serializer(), attachment)))
+
+    private suspend fun open(command: String, reference: String): InputStream {
+        val files = RuntimeFiles("dshjk-attachment-stream-")
+        var opened: InputStream? = null
         try {
             return withContext(Dispatchers.IO) {
                 val path = files.path("output")
-                val reference = HarnessProtocol.json.encodeToString(FileAttachment.serializer(), attachment)
-                stage("read-file", reference, path)
+                stage(command, reference, path)
                 currentCoroutineContext().ensureActive()
-                FileAttachmentStream(attachment, Files.newInputStream(path), files).also { opened = it }
+                val input = Files.newInputStream(path)
+                object : FilterInputStream(input) {
+                    @Synchronized
+                    override fun close() = files.use { super.close() }
+                }.also { opened = it }
             }
         } catch (error: Throwable) {
             // Cancellation at the dispatcher handoff can discard an already opened stream.
@@ -187,6 +197,9 @@ class AttachmentStore private constructor(
 
     @JvmName("readFile") fun readFileBlocking(attachment: FileAttachment, destination: Path): Unit =
         runBlocking { readFile(attachment, destination) }
+
+    @JvmName("openImage") fun openImageBlocking(attachment: ImageAttachment): InputStream =
+        runBlocking { openImage(attachment) }
 
     @JvmName("openFile") fun openFileBlocking(attachment: FileAttachment): FileAttachmentStream =
         runBlocking { openFile(attachment) }

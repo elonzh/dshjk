@@ -112,6 +112,14 @@ class NativeAttachmentsTest {
                 assertContentEquals(pngSignature, Files.readAllBytes(imageCopy).take(8).toByteArray())
                 assertEquals(image.bytes, Files.size(imageCopy))
 
+                attachments.openImage(image).use { stream ->
+                    assertContentEquals(Files.readAllBytes(imageCopy), stream.readAllBytes())
+                }
+                val invalidImage = assertFailsWith<AttachmentException> {
+                    attachments.openImage(image.copy(bytes = image.bytes + 1)).close()
+                }
+                assertEquals("ATTACHMENT_CORRUPT", invalidImage.code)
+
                 val error = assertFailsWith<AttachmentException> {
                     attachments.readFile(file.copy(bytes = file.bytes + 1), fileCopy)
                 }
