@@ -241,6 +241,18 @@ DeepSeekHarness(config).use { harness ->
 
 Save operations return native DSH attachment references. DSH validates and normalizes images and preserves ordinary file bytes. A read replaces the destination after successful verification. `AttachmentException.code` preserves native codes such as `INVALID_IMAGE`, `ATTACHMENT_NOT_FOUND`, and `ATTACHMENT_CORRUPT`. DSH presents ordinary files to the model as references. Reading their contents requires a tool that can handle the file. The host application owns authorization, quotas, and retention.
 
+When the upload is already a stream, call `saveFile(InputStream, name)` or `saveImage(InputStream, mediaType[, name])`. The SDK sends chunks from the stream's current position to DSH stdin without creating a local copy of the upload. DSH reads and normalizes images within its configured limits. Use the `Path` overloads for an existing local file.
+
+For example, a Java multipart handler can pass the uploaded part's stream directly:
+
+```java
+try (var input = part.getInputStream()) {
+    return attachments.saveFile(input, part.getSubmittedFileName());
+}
+```
+
+The caller closes the stream; Kotlin callers can use `use { ... }`. Attachment commands time out after 30 seconds by default. Cancellation stops the DSH process, but an in-progress `InputStream.read` returns according to the stream implementation. Configure read timeouts for network sources so the call can finish promptly.
+
 ### Serve a stored image
 
 `openImage(ImageAttachment)` returns an `InputStream` for the verified, normalized image. Set the response headers from the attachment reference, and close the stream to remove its temporary copy.

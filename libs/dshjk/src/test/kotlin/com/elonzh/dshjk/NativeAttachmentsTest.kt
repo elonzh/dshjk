@@ -8,6 +8,7 @@ import com.elonzh.dshjk.configuration.HarnessPatch
 import com.elonzh.dshjk.configuration.HarnessPlugin
 import com.elonzh.dshjk.configuration.ProfileInvocation
 import com.elonzh.dshjk.configuration.RuntimeCommand
+import com.elonzh.dshjk.error.CliException
 import com.elonzh.dshjk.protocol.ContentBlock
 import com.elonzh.dshjk.protocol.HarnessProtocol
 import com.elonzh.dshjk.protocol.ImageMediaType
@@ -16,10 +17,14 @@ import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
+import org.junit.jupiter.api.condition.DisabledOnOs
 import org.junit.jupiter.api.condition.EnabledIf
+import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
+import java.io.IOException
+import java.io.InputStream
 import java.net.InetSocketAddress
 import java.nio.file.Files
 import java.nio.file.Path
@@ -28,8 +33,9 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 @EnabledIf("hasNativeRuntime")
 @Timeout(90)
@@ -65,7 +71,7 @@ class NativeAttachmentsTest {
         try {
             val store = root.resolve("configured-store")
             val patch = Files.writeString(root.resolve("storage.json"),
-                """[{"id":"attachment-local","config":{"dshHome":${HarnessProtocol.json.encodeToString(store.toString())}}}]""")
+                """[{"id":"attachment-local","config":{"dshHome":${HarnessProtocol.json.encodeToString(store.toString())},"maxImageBytes":1024}}]""")
             val config = HarnessConfig(
                 dshHome = root.resolve("home"),
                 cwd = root,
@@ -83,13 +89,12 @@ class NativeAttachmentsTest {
             val png = Base64.getDecoder().decode(
                 "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==",
             )
-            val sourceImage = Files.write(root.resolve("sample.png"), png)
             val fileCopy = root.resolve("copy.csv")
             val imageCopy = root.resolve("copy.png")
             val harness = DeepSeekHarness(config)
             val attachments = AttachmentStore(harness)
             harness.use {
-                val image = attachments.saveImage(sourceImage, ImageMediaType.IMAGE_PNG, "sample.png")
+                val image = png.inputStream().use { attachments.saveImage(it, ImageMediaType.IMAGE_PNG, "sample.png") }
                 val file = attachments.saveFile(sourceFile)
                 assertEquals("sample.csv", file.name)
                 assertEquals(2, image.width)
@@ -119,6 +124,10 @@ class NativeAttachmentsTest {
                     attachments.openImage(image.copy(bytes = image.bytes + 1)).close()
                 }
                 assertEquals("ATTACHMENT_CORRUPT", invalidImage.code)
+                val oversized = assertFailsWith<AttachmentException> {
+                    ByteArray(2 * 1024 * 1024).inputStream().use { attachments.saveImage(it, ImageMediaType.IMAGE_PNG) }
+                }
+                assertEquals("IMAGE_TOO_LARGE", oversized.code)
 
                 val error = assertFailsWith<AttachmentException> {
                     attachments.readFile(file.copy(bytes = file.bytes + 1), fileCopy)
@@ -146,7 +155,7 @@ class NativeAttachmentsTest {
         val source = Files.write(root.resolve("source.bin"), content)
         DeepSeekHarness(config).use { harness ->
             val store = AttachmentStore(harness.cli, invocation)
-            val first = store.saveFile(source, "first.bin")
+            val first = content.inputStream().use { store.saveFile(it, "first.bin") }
             val second = store.saveFile(source, "linked-name.bin")
             assertEquals(first.attachmentId, second.attachmentId)
             assertNull(harness.client.pid)
@@ -167,6 +176,44 @@ class NativeAttachmentsTest {
                 Files.newOutputStream(sink).use { assertEquals(second.bytes, stream.transferTo(it)) }
             }
             assertEquals(-1, Files.mismatch(source, sink))
+        }
+    }
+
+    @Test
+    @DisabledOnOs(OS.WINDOWS, disabledReason = "Depends on graceful SIGTERM delivery to DSH")
+    fun `a failed upload read aborts the provider without publishing a partial file`(): Unit = runBlocking {
+        val home = root.resolve("home")
+        val config = HarnessConfig(dshHome = home, cwd = root, runtime = runtime, profile = "sdk-minimal",
+            environment = mapOf("DSH_TELEMETRY_DISABLED" to "1"))
+        val staging = home.resolve("attachments/v1/tmp")
+        val input = object : InputStream() {
+            var closed = false
+            var started = false
+            override fun read(): Int = error("Expected a bulk read")
+            override fun read(bytes: ByteArray, offset: Int, length: Int): Int {
+                if (!started) {
+                    started = true
+                    bytes.fill(1, offset, offset + length)
+                    return length
+                }
+                // Fail after the provider is actively consuming the upload.
+                val deadline = System.nanoTime() + 10_000_000_000L
+                while (!Files.isDirectory(staging) || Files.list(staging).use { files -> files.noneMatch { Files.size(it) > 0 } }) {
+                    check(System.nanoTime() < deadline) { "DSH did not start staging the upload" }
+                    Thread.sleep(10)
+                }
+                throw IOException("upload disconnected")
+            }
+            override fun close() { closed = true }
+        }
+        DeepSeekHarness(config).use { harness ->
+            input.use {
+                val error = assertFailsWith<CliException> { AttachmentStore(harness).saveFile(it, "partial.bin") }
+                assertEquals("upload disconnected", assertIs<IOException>(error.cause).message)
+                assertFalse(it.closed)
+            }
+            assertFalse(Files.exists(home.resolve("attachments/v1/files")))
+            assertTrue(Files.list(staging).use { it.findAny().isEmpty })
         }
     }
 }

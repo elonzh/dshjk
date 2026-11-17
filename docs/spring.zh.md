@@ -23,7 +23,7 @@ flowchart LR
 Starter 与 SDK 使用相同的版本。
 
 ```kotlin
-implementation("com.elonzh:dshjk-spring-boot-starter:0.2.0")
+implementation("com.elonzh:dshjk-spring-boot-starter:0.2.1")
 ```
 
 在已有 Spring Boot 应用中注入客户端：

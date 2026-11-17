@@ -23,6 +23,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import java.io.FilterInputStream
+import java.io.IOException
 import java.io.InputStream
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
@@ -63,18 +64,34 @@ class AttachmentStore private constructor(
     }
 
     /** Saves a normalized image and returns the reference accepted by ContentBlock.Image. */
-    @JvmSynthetic suspend fun saveImage(path: Path, mediaType: ImageMediaType, name: String? = null): ImageAttachment {
-        val result = execute(listOf("save-image", mediaType.wireName) + listOfNotNull(name), path)
+    @JvmSynthetic suspend fun saveImage(path: Path, mediaType: ImageMediaType, name: String? = null): ImageAttachment =
+        withFileInput(path) { saveImage(it, mediaType, name) }
+
+    /** Saves an encoded image from [input]. The caller closes the stream and bounds any blocking reads. */
+    @JvmSynthetic suspend fun saveImage(input: InputStream, mediaType: ImageMediaType, name: String? = null): ImageAttachment {
+        val result = execute(listOf("save-image", mediaType.wireName) + listOfNotNull(name), input)
         return boundary("DSH image attachment reference") {
             HarnessProtocol.json.decodeFromJsonElement(ImageAttachment.serializer(), result)
         }
     }
 
     /** Streams the original file bytes into the store and returns a reference for ContentBlock.File. */
-    @JvmSynthetic suspend fun saveFile(path: Path, name: String = path.fileName.toString()): FileAttachment {
-        val result = execute(listOf("save-file", name), path)
+    @JvmSynthetic suspend fun saveFile(path: Path, name: String = path.fileName.toString()): FileAttachment =
+        withFileInput(path) { saveFile(it, name) }
+
+    /** Streams the original bytes from [input]. The caller closes the stream and bounds any blocking reads. */
+    @JvmSynthetic suspend fun saveFile(input: InputStream, name: String): FileAttachment {
+        val result = execute(listOf("save-file", name), input)
         return boundary("DSH file attachment reference") {
             HarnessProtocol.json.decodeFromJsonElement(FileAttachment.serializer(), result)
+        }
+    }
+
+    private suspend fun <T> withFileInput(path: Path, save: suspend (InputStream) -> T): T = withContext(Dispatchers.IO) {
+        try {
+            Files.newInputStream(path.toAbsolutePath().normalize()).use { save(it) }
+        } catch (error: IOException) {
+            throw CliException(invocation.profile, "Cannot read attachment file '$path': ${error.message}", error)
         }
     }
 
@@ -154,7 +171,7 @@ class AttachmentStore private constructor(
         }
     }
 
-    private suspend fun execute(arguments: List<String>, input: Path? = null): JsonElement = withContext(Dispatchers.IO) {
+    private suspend fun execute(arguments: List<String>, input: InputStream? = null): JsonElement = withContext(Dispatchers.IO) {
         val profile = invocation.profile
         RuntimeFiles("dshjk-attachments-").use { files ->
             val module = files.path("attachments.mjs")
@@ -164,7 +181,7 @@ class AttachmentStore private constructor(
             val plugin = HarnessPlugin("dshjk-attachments", module.toUri().toString())
             val reply = cli.executeWithOverlays(
                 invocation,
-                input = input,
+                stdin = input,
                 arguments = arguments,
                 overlays = surfacePatches + HarnessPatch(insert = listOf(plugin)),
             )
@@ -188,9 +205,16 @@ class AttachmentStore private constructor(
         path: Path, mediaType: ImageMediaType, name: String? = null,
     ): ImageAttachment = runBlocking { saveImage(path, mediaType, name) }
 
+    @JvmName("saveImage") @JvmOverloads fun saveImageBlocking(
+        input: InputStream, mediaType: ImageMediaType, name: String? = null,
+    ): ImageAttachment = runBlocking { saveImage(input, mediaType, name) }
+
     @JvmName("saveFile") @JvmOverloads fun saveFileBlocking(
         path: Path, name: String = path.fileName.toString(),
     ): FileAttachment = runBlocking { saveFile(path, name) }
+
+    @JvmName("saveFile") fun saveFileBlocking(input: InputStream, name: String): FileAttachment =
+        runBlocking { saveFile(input, name) }
 
     @JvmName("readImage") fun readImageBlocking(attachment: ImageAttachment, destination: Path): Unit =
         runBlocking { readImage(attachment, destination) }

@@ -241,6 +241,18 @@ DeepSeekHarness(config).use { harness ->
 
 保存返回 DSH 原生附件引用。DSH 校验并标准化图片，普通文件保留原始字节。读取校验成功后才替换目标文件。`AttachmentException.code` 提供原生错误码，可区分 `INVALID_IMAGE`、`ATTACHMENT_NOT_FOUND` 和 `ATTACHMENT_CORRUPT` 等错误。普通文件在模型输入中以引用表示，读取其内容需要相应的工具。宿主应用负责授权、配额和保留期限。
 
+上传内容已经是流时，可调用 `saveFile(InputStream, name)` 或 `saveImage(InputStream, mediaType[, name])`，无需先写成本地文件。SDK 从流的当前位置分块写入 DSH 的 stdin；DSH 对图片按配置限制读取并标准化。已有本地文件时，可继续使用 `Path` 重载。
+
+例如，Java 的 multipart 处理器可直接传入上传部分的流：
+
+```java
+try (var input = part.getInputStream()) {
+    return attachments.saveFile(input, part.getSubmittedFileName());
+}
+```
+
+流由调用方关闭，Kotlin 可用 `use { ... }`。附件命令的默认超时为 30 秒；取消会停止 DSH 进程，但阻塞中的 `InputStream.read` 能否立即返回取决于具体实现。为网络输入配置读取超时，以便调用及时结束。
+
 ### 读取图片流
 
 `openImage(ImageAttachment)` 返回经过校验的标准化图片流。HTTP 处理器可以用引用中的媒体类型和字节数设置响应头，关闭流时会删除临时文件。

@@ -12,6 +12,8 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
 import org.junit.jupiter.api.condition.EnabledIf
 import org.junit.jupiter.api.io.TempDir
+import java.io.InputStream
+import java.io.InterruptedIOException
 import java.net.InetSocketAddress
 import java.nio.file.Files
 import java.nio.file.Path
@@ -218,9 +220,28 @@ class NativeRuntimeTest {
             assertChildExited(timedOut)
 
             val cancelled = root.resolve("cancelled-child")
-            val command = async { cli.execute(ProfileInvocation("fixture", listOf("hang", cancelled.toString()))) }
+            val reading = CompletableDeferred<Unit>()
+            val interrupted = CompletableDeferred<Unit>()
+            val input = object : InputStream() {
+                override fun read(): Int {
+                    reading.complete(Unit)
+                    try {
+                        Thread.sleep(Long.MAX_VALUE)
+                        return -1
+                    } catch (_: InterruptedException) {
+                        interrupted.complete(Unit)
+                        throw InterruptedIOException("Upload read cancelled")
+                    }
+                }
+            }
+            val command = async {
+                val invocation = ProfileInvocation("fixture", listOf("hang", cancelled.toString()))
+                cli.executeWithOverlays(invocation, invocation.arguments, emptyList(), stdin = input)
+            }
             awaitChildPid(cancelled)
+            withTimeout(5_000) { reading.await() }
             command.cancelAndJoin()
+            assertTrue(interrupted.isCompleted)
             assertChildExited(cancelled)
 
             val closing = root.resolve("closing-child")

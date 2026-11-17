@@ -7,12 +7,12 @@ export const name = 'dshjk-attachments'
 export const inject = ['attachments', 'cmdlineArgs', 'appReady', 'appExit']
 
 const writeOutput = promisify(process.stdout.write.bind(process.stdout))
-async function run(ctx, args) {
+async function run(ctx, args, signal) {
   let exitCode = 0
   try {
     let response
     try {
-      response = { result: await main(ctx.attachments, args) }
+      response = { result: await main(ctx.attachments, args, signal) }
     } catch (error) {
       exitCode = 1
       response = { error: {
@@ -20,30 +20,43 @@ async function run(ctx, args) {
         message: error instanceof Error ? error.message : String(error),
       } }
     }
-    await writeOutput(JSON.stringify(response))
+    if (!signal?.aborted) await writeOutput(JSON.stringify(response))
   } catch (error) {
     exitCode = 1
     process.stderr.write(`Cannot write attachment command result: ${error}\n`)
   } finally {
-    ctx.appExit(exitCode)
+    if (!signal?.aborted) ctx.appExit(exitCode)
   }
 }
 
 export function apply(ctx) {
   const args = ctx.cmdlineArgs.get()
-  ctx.effect(() => ctx.appReady.onReady(() => {
-    void run(ctx, args)
-  }), 'dshjk.attachments.cli')
+  ctx.effect(() => {
+    const upload = args[0] === 'save-file' ? new AbortController() : undefined
+    let operation
+    const unwatch = ctx.appReady.onReady(() => {
+      operation = run(ctx, args, upload?.signal)
+    })
+    return async () => {
+      unwatch()
+      if (upload && operation) {
+        // Drain the provider's staging cleanup during the DSH launcher's graceful shutdown.
+        upload.abort()
+        process.stdin.destroy()
+        await operation
+      }
+    }
+  }, 'dshjk.attachments.cli')
 }
 
-async function main(store, args) {
+async function main(store, args, signal) {
   const [command, value, option, destination] = args
   if (command === 'save-image' && value && args.length <= 3) {
     const data = await readImageInput(store.imageLimits.maxImageBytes)
     return await store.saveImage({ data, mediaType: value, name: option })
   }
   if (command === 'save-file' && value && args.length === 2) {
-    return await store.saveFileStream({ data: process.stdin, name: value })
+    return await store.saveFileStream({ data: process.stdin, name: value, signal })
   }
   if ((command === 'read-image' || command === 'read-file') && value && option === '--output' && destination && args.length === 4) {
     const ref = JSON.parse(value)

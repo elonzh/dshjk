@@ -14,7 +14,7 @@ The SDK is available from Maven Central. Gradle and Maven use the same coordinat
 
 ```kotlin
 dependencies {
-    implementation("com.elonzh:dshjk:0.2.0")
+    implementation("com.elonzh:dshjk:0.2.1")
 }
 ```
 
@@ -22,7 +22,7 @@ dependencies {
 <dependency>
     <groupId>com.elonzh</groupId>
     <artifactId>dshjk</artifactId>
-    <version>0.2.0</version>
+    <version>0.2.1</version>
 </dependency>
 ```
 
