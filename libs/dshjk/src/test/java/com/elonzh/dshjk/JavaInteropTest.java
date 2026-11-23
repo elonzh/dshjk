@@ -4,10 +4,16 @@ import com.elonzh.dshjk.client.DeepSeekHarness;
 import com.elonzh.dshjk.configuration.HarnessConfig;
 import com.elonzh.dshjk.configuration.RuntimeCommand;
 import com.elonzh.dshjk.error.RequestTimeoutException;
+import com.elonzh.dshjk.office.HarnessOffice;
+import com.elonzh.dshjk.office.OfficeConfig;
+import com.elonzh.dshjk.office.OfficeException;
+import com.elonzh.dshjk.office.OfficeOptions;
+import com.elonzh.dshjk.office.OfficeRenderOptions;
 import com.elonzh.dshjk.protocol.*;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
@@ -68,5 +74,56 @@ public class JavaInteropTest {
         assertEquals("completed", ended.getReason().getKind().getWireName());
         assertEquals(AgentStatus.RUNNING, AgentStatus.valueOf("RUNNING"));
         assertEquals("session/query", SdkRequestMethod.SESSION_QUERY.getWireName());
+    }
+    @Test void standaloneOfficeApiAndBuildersWorkFromJava17() throws Exception {
+        var cli = Files.writeString(root.resolve("java-office.mjs"), """
+            import { mkdirSync, writeFileSync } from 'node:fs'
+            import { join } from 'node:path'
+            const cmd = process.argv[2]
+            if (cmd === 'capabilities') {
+              process.stdout.write(JSON.stringify({
+                runtime: { version: '0.2.3', backend: 'wasm', nativePreview: false, cliPath: process.argv[1], nodeApiPath: process.argv[1] },
+                conversions: [{ inputs: ['docx'], outputs: ['pdf'] }],
+                imageRendering: { inputs: ['docx'], output: 'png', officeBackend: 'libreoffice', pdfBackend: 'pdfium', maxPages: 100, maxPixels: 16777216, maxDimension: 8192 },
+                recalculation: { inputs: ['xlsx'], outputs: ['xlsx'], preservesFormulas: true },
+              }) + '\\n')
+            } else if (cmd === 'convert' || cmd === 'recalculate') {
+              const out = process.argv[process.argv.indexOf('--output') + 1]
+              writeFileSync(out, 'ok')
+              process.stdout.write(JSON.stringify({ backend: 'wasm', outputPath: out, missingFonts: [], pageCount: 2 }) + '\\n')
+            } else if (cmd === 'render') {
+              const dir = process.argv[process.argv.indexOf('--output-dir') + 1]
+              mkdirSync(dir)
+              const img = join(dir, 'page-0001.png')
+              writeFileSync(img, 'png')
+              const manifest = {
+                schemaVersion: 1, backend: 'wasm', rasterEngine: 'libreoffice', source: 'saved',
+                inputPath: process.argv[process.argv.indexOf('--input') + 1], sourceSha256: 'abcd',
+                dpi: 96, pageCount: 1, missingFonts: [],
+                images: [{ index: 1, path: img, width: 10, height: 20, rectangle: { x: 0, y: 0, width: 10, height: 20 }, byteLength: 3, sheet: 'Summary', range: 'A1:B2' }],
+              }
+              writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest) + '\\n')
+              process.stdout.write(JSON.stringify(manifest) + '\\n')
+            }
+            """);
+        var options = OfficeOptions.builder().timeout(Duration.ofSeconds(10)).maxInputBytes(1024L).build();
+        var config = OfficeConfig.builder().cwd(root).command(RuntimeCommand.node(cli)).defaultOptions(options).build();
+        try (var office = new HarnessOffice(config)) {
+            assertEquals("wasm", office.capabilities().getRuntime().getBackend());
+            var converted = office.convert(Path.of("in.docx"), Path.of("out.pdf"), options);
+            assertEquals(2, converted.getPageCount());
+            assertEquals(root.resolve("out.pdf"), converted.getOutputPath());
+            var recalc = office.recalculate(Path.of("in.xlsx"), Path.of("out.xlsx"));
+            assertEquals(root.resolve("out.xlsx"), recalc.getOutputPath());
+            var renderOpts = OfficeRenderOptions.builder().sheet("Summary").range("A1:B2").dpi(96).build();
+            var rendered = office.renderImages(Path.of("in.xlsx"), Path.of("pages"), renderOpts);
+            assertEquals("libreoffice", rendered.getRasterEngine());
+            assertEquals(3L, rendered.getImages().get(0).getByteLength());
+            assertEquals(OfficeRenderOptions.sheet("Summary", "A1:B2"), new OfficeRenderOptions(List.of(), "Summary", "A1:B2"));
+            assertEquals(OfficeRenderOptions.pages(1, 3).getPages(), List.of(1, 3));
+            var err = assertThrows(OfficeException.class, () -> office.convert(Path.of("in.docx"), Path.of("out.pdf")));
+            assertEquals("invalid-output", err.getCode());
+            assertNull(err.getExitCode());
+        }
     }
 }

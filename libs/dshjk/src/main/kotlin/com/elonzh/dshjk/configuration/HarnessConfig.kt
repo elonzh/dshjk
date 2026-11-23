@@ -100,14 +100,18 @@ class HarnessConfig(
 }
 
 /** An executable, or Node plus an explicit CLI module. No shell command interpretation. */
-class RuntimeCommand private constructor(val executable: String, arguments: List<String>) {
+class RuntimeCommand private constructor(
+    val executable: String,
+    arguments: List<String>,
+    internal val nodeModule: Path? = null,
+) {
     val arguments: List<String> = java.util.List.copyOf(arguments)
     init { require(executable.isNotBlank()) }
     companion object {
         internal val automatic = RuntimeCommand("dsh", emptyList())
         @JvmStatic fun executable(command: String) = RuntimeCommand(command, emptyList())
         @JvmStatic @JvmOverloads fun node(cli: Path, node: String = "node") =
-            RuntimeCommand(node, listOf(cli.toAbsolutePath().normalize().toString()))
+            cli.toAbsolutePath().normalize().let { RuntimeCommand(node, listOf(it.toString()), it) }
         /** Explicit launcher prefix, e.g. a Java executable wrapper or Node loader. Profile flags are appended. */
         @JvmStatic fun of(executable: String, arguments: List<String>) = RuntimeCommand(executable, arguments)
     }

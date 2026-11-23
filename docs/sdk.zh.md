@@ -13,10 +13,13 @@ flowchart LR
   Harness --> Cli["HarnessCli"]
   App --> Attachments["AttachmentStore"]
   Attachments --> Cli
-  Client --> Runtime["共用 DSH 进程层"]
+  App --> Office["HarnessOffice（独立或绑定 Harness）"]
+  Office --> Runtime
+  Client --> Runtime["共用进程层"]
   Cli --> Runtime
   Runtime --> SDK["dsh · SDK profile"]
   Runtime --> Command["dsh · 命令 profile"]
+  Runtime --> Kit["dsoffice · LibreOffice Kit CLI"]
 ```
 
 `configuration` 定义启动参数，`runtime/internal` 管理进程启动、终止和临时文件。`client/internal` 处理 stdio JSON-RPC、请求关联、回调与事件分发。`DeepSeekHarness` 负责初始化和关闭，`HarnessSession` 收集每次输入触发的活动。Java 的阻塞方法委托给 Kotlin 的挂起方法。
@@ -148,7 +151,7 @@ Java 使用 builder 的同名方法和相同 SAM 接口。`approval/request` 返
 
 配置通过可省略的 `HarnessConfig()` 或 Java `HarnessConfig.builder()` 创建，集合在边界复制为不可修改值，内联 patch 的 JSON 在构造配置时形成快照。省略 `dshHome` 时，SDK 保留子进程环境，由运行时解析 home，包括空白环境值回退和 `~` 展开；SDK 不在 JVM 内复制发现算法。启动参数按 argv 传递，不经 shell 解释；`RuntimeCommand.of` 支持显式 launcher 前缀，例如自定义 Node loader。SDK 不修改宿主全局环境。
 
-Kotlin 的 `closeAsync()` 和 Java 的 `close()` 使用同一关闭实现。关闭 harness 会取消正在执行的 CLI 和附件调用。RPC 客户端停止宿主回调，在时限内尝试发送 `shutdown` 并等待 stdin EOF 清理。进程层终止仍在运行的进程，包括终止时可见的后代，并确认退出。插件负责释放自己创建的资源。关闭幂等且不可重启，Kotlin 的关闭在 `NonCancellable` 中执行。
+Kotlin 的 `closeAsync()` 和 Java 的 `close()` 使用同一关闭实现。关闭 harness 会取消正在执行的 CLI、附件和绑定该 harness 的 Office 调用。独立创建的 `HarnessOffice` 同样实现 `AutoCloseable`，提供 `close()` 和 `closeAsync()`；关闭绑定在 harness 上的 `HarnessOffice` 只会取消该实例自身进行中的操作，不会关闭父 harness。RPC 客户端停止宿主回调，在时限内尝试发送 `shutdown` 并等待 stdin EOF 清理。进程层终止仍在运行的进程，包括终止时可见的后代，并确认退出。插件负责释放自己创建的资源。关闭幂等且不可重启，Kotlin 的关闭在 `NonCancellable` 中执行。
 
 本地请求超时或协程取消会撤回尚未开始的发送，移除等待项并忽略迟到响应。已开始写入的请求仍可能由运行时执行。要中止整个运行时须关闭其拥有者。SDK 不加入无依据的 Session abort 方法。
 
@@ -283,8 +286,85 @@ try (var stream = attachments.openFile(attachmentId, fileLookup)) {
 
 已有引用时可直接调用 `openFile(FileAttachment)`。两个重载都在 DSH 校验并写入临时文件后返回流，关闭流会删除临时文件。这样可以在发送响应头之前处理校验失败，下载也无需把整个文件载入内存。Kotlin 调用对应的挂起方法，并用 `use { ... }` 关闭流。
 
+## 本地 Office 操作
+
+`HarnessOffice` 封装本地 LibreOffice Kit（`dsoffice`）CLI，用于查询能力、转换文档、重算工作簿，或把 Office 与 PDF 页面渲染为 PNG，无需启动 SDK 会话或请求模型。只要本地有 `@deepseek-ai/libreoffice-kit`（`dsoffice`）、`DSH_OFFICE_SIDECAR` 或显式 `RuntimeCommand`，即可**不依赖 `dsh` 运行时或 `DeepSeekHarness` 独立使用**。如果应用已创建 `DeepSeekHarness`，也可使用 `HarnessOffice(harness)` 共享其工作目录、环境变量、`dshjk-runtime` 下载器/缓存与关闭生命周期。Kotlin 提供挂起方法，Java 调用同名阻塞方法。
+
+```kotlin
+import com.elonzh.dshjk.office.*
+
+// 独立模式：无需 DeepSeekHarness 或 dsh 运行时
+HarnessOffice().use { office ->
+    val caps = office.capabilities()
+    val pdf = office.convert(Path.of("report.doc"), Path.of("report.pdf"))
+    val csv = office.convert(Path.of("budget.xlsx"), Path.of("summary.csv"), sheet = "Summary")
+    val book = office.recalculate(Path.of("budget.xls"), Path.of("budget.xlsx"))
+    val images = office.renderImages(
+        book.outputPath,
+        Path.of("budget-preview"),
+        OfficeRenderOptions(sheet = "Summary", range = "A1:D20", dpi = 144, maxPages = 10),
+        OfficeOptions(timeout = Duration.ofSeconds(60), fontDirectories = listOf(Path.of("/usr/share/fonts"))),
+    )
+}
+```
+
+Java 侧使用 `try (var office = new HarnessOffice())`（或 `OfficeConfig.builder()` / `new HarnessOffice(command)`），配合 `OfficeOptions.builder()`、`OfficeRenderOptions.builder()`（以及 `OfficeRenderOptions.pages(1, 3)`、`OfficeRenderOptions.sheet("Summary", "A1:D20")` 等静态入口）。需要复用 Harness 配置和生命周期时，使用 `new HarnessOffice(harness)`（可选传入显式 `RuntimeCommand` 或默认 `OfficeOptions`）。
+
+`HarnessOffice` 与 `dsoffice` CLI 契约对齐：
+
+- `capabilities()` 执行 `dsoffice capabilities --json`，返回 `OfficeCapabilities`（Kit 版本、`native` / `wasm` 后端、支持的转换格式矩阵及渲染/重算元数据），默认超时 30 秒。
+- `convert(input, output, sheet, options)` 按输出扩展名转换（`doc`/`docx`/`odt` → `pdf`/`docx`/`odt`/`txt`；`xls`/`xlsx`/`ods` → `pdf`/`xlsx`/`ods`/`csv`；`ppt`/`pptx`/`odp` → `pdf`/`pptx`/`odp`）。多工作表导出 CSV 时必须指定精确的 `sheet` 名称。PDF 结果包含 `pageCount`。
+- `recalculate(input, output, options)` 重算整个工作簿的公式并刷新缓存值（`xls`/`xlsx`/`ods` → `xlsx`/`ods`）。
+- `renderImages(input, outputDirectory, renderOptions, options)` 将 Office 或 PDF 渲染为 PNG 并写出缩进格式化的 `manifest.json`（更新为最终输出路径），返回 `OfficeRenderResult`（含 `rasterEngine`、`sourceSha256`、`pageCount`、`dpi`、`missingFonts` 以及带 `index`、`rectangle`、`byteLength` 等字段的 `OfficeRenderedImage`）。`OfficeRenderOptions` 中文档/幻灯片 `pages`（去重正整数）与表格 `sheet`/`range` 互斥；`dpi`（`24..600`）、`maxPages`（`1..10000`）、`maxPixels` 与 `maxDimension` 在调用前即做校验。
+- `OfficeOptions` 对应 `dsoffice` 的限制与字体参数（`timeout`、`maxInputBytes`、`maxOutputBytes`、`maxImageResolution`、`maxArchiveEntries`、`maxUncompressedBytes`、`fontDirectories`、`initialFontFamilies`、`fontFallbacks`、`maxFontFiles`、`maxFontFileBytes`、`maxLoadedFontBytes`）。在 `OfficeConfig` 或 `HarnessOffice` 上设置的默认选项会与单次调用覆盖合并。
+
+相对输入路径、输出路径和 `fontDirectories` 均基于 `cwd`（`OfficeConfig.cwd` 或 `HarnessConfig.cwd`）解析。输出须指向已有父目录下的新文件或新目录；SDK 先写入同目录隐藏暂存目录，完成后再原子发布，绝不覆盖已有文件。成功的产物归调用方所有。
+
+`OfficeOptions.timeout` 默认为 2 分钟（范围 `1 ms` 至 `2_147_483_647 ms`），并通过 `--timeout-ms` 传给 `dsoffice`。CLI 到点主动中止并清理临时目录后抛出 `OfficeException`（`code = "timeout"`，附带 `exitCode`）；若进程在 `terminateGrace` 宽限内仍未退出，SDK 强制回收进程树、丢弃暂存产物并抛出 `RequestTimeoutException`。其他转换失败均抛出 `OfficeException`，保留 Kit 错误码（如 `invalid-document`、`invalid-output`、`unsupported-format`、`output-too-large`、`unavailable`）及退出码 `exitCode`。
+
+CLI 按以下优先级查找：
+
+1. 显式 `command`（`HarnessOffice(command)`、`OfficeConfig.command` 或 `HarnessOffice(harness, command)`），例如 `RuntimeCommand.node(kitCliPath, nodeExecutable)` 或 `RuntimeCommand.executable("dsoffice")`。
+2. `DSH_OFFICE_SIDECAR`（来自配置环境变量或宿主环境）：指向已准备好的 sidecar 绝对目录，需包含 `node/bin/node`（Windows 为 `node/bin/node.exe`）与 `node_modules/@deepseek-ai/libreoffice-kit/lib/cli.js`。
+3. 通过 `HarnessOffice(harness)` 绑定且使用 `dshjk-runtime` 时：查找 `DSH_RESOURCE_CACHE`（默认 `~/.cache/deepseek-harness/resources`）下已验证的 sidecar 缓存。首次使用前调用一次 `office.downloadRuntime()`（默认超时 10 分钟，返回 sidecar 绝对路径 `Path`）下载并校验上游 sidecar，后续调用自动复用缓存；未通过 `HarnessOffice(harness)` 使用 `dshjk-runtime` 时调用 `downloadRuntime()` 会抛出 `OfficeException`（`code = "unavailable"`）。
+4. 本地 Node.js 与 npm 解析（不触发下载）：独立实例依次搜索 PATH 上的 `dsoffice`、`processCwd` 下的 npm 项目和 PATH 上的 `dsh`；绑定 Harness 的实例优先搜索配置的 DSH Node 模块或可执行文件，其次搜索 PATH 上的 `dsoffice` 与 `processCwd`。
+
+### 构建支持离线 Office 操作的镜像
+
+在镜像构建阶段将 Node.js 和 `@deepseek-ai/libreoffice-kit` 安装到 `/opt/office`，并在最终镜像中设置 `DSH_OFFICE_SIDECAR=/opt/office`。Linux 上 LibreOffice Kit 使用 WASM 引擎，完全依赖容器内系统字体（或 `OfficeOptions.fontDirectories`）；如果容器内没有任何可用字体，转换会直接返回 `unavailable`。建议在运行镜像中安装 Office 度量兼容英文字体和所需的中文字体。
+
+此 Linux 示例要求 Docker 构建上下文中已有可在 Java 21 上运行的 `app.jar`。`@deepseek-ai/libreoffice-kit` 版本应与当前验证基线保持一致（`0.2.2-rc.5` 对应 `0.2.3`），并按目标部署架构构建镜像。
+
+```dockerfile
+FROM node:24.17.0-bookworm-slim AS office
+
+RUN install -D /usr/local/bin/node /opt/office/node/bin/node \
+ && npm install --prefix /opt/office \
+      --omit=dev --include=optional --no-audit --no-fund \
+      @deepseek-ai/libreoffice-kit@0.2.3
+
+FROM eclipse-temurin:21-jre-noble
+
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      libatomic1 \
+      fonts-liberation \
+      fonts-crosextra-carlito \
+      fonts-crosextra-caladea \
+      fonts-noto-cjk \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=office /opt/office/ /opt/office/
+ENV DSH_OFFICE_SIDECAR=/opt/office
+
+WORKDIR /app
+COPY app.jar /app/app.jar
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+```
+
+在该镜像中可直接独立使用 `HarnessOffice()` 离线转换文档，无需 `dsh` 运行时，也无需调用 `downloadRuntime()`。如果 `app.jar` 同时随包携带了 `dshjk-runtime`，`DSH_OFFICE_SIDECAR=/opt/office` 也会自动同时供 `HarnessOffice(harness)` 和 Agent 内置 Office 工具复用。用于完全隔离的环境时，可在联网 CI 构建镜像，再通过 `docker save` 和 `docker load` 交付。
+
 ## 兼容与验证边界
 
-兼容性验证基线是官方 npm 包 `@deepseek-ai/dsh@0.2.2-rc.5`。上游的 `packages/sdk/protocol/src/types.ts` 定义通信协议，SDK 的活动处理逻辑对齐上游 TypeScript 和 Python SDK。也可通过 `HarnessConfig.runtime` 指定其他运行时版本。 [上游发布说明](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.2-rc.5)
+兼容性验证基线是官方 npm 包 `@deepseek-ai/dsh@0.2.2-rc.5`（对应 `@deepseek-ai/libreoffice-kit@0.2.3`）。上游的 `packages/sdk/protocol/src/types.ts` 定义通信协议，SDK 的活动处理逻辑对齐上游 TypeScript 和 Python SDK。也可通过 `HarnessConfig.runtime` 或 `OfficeConfig.command` 指定其他运行时版本。 [上游发布说明](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.2-rc.5)
 
-本地验证覆盖 JDK 17/21、Java/Kotlin 消费、双向 RPC、Unicode、命令关联、并发 Session、独立订阅与溢出、回调嵌套请求、取消与超时、stderr、握手失败/异常退出/强制回收。未经修改的真实 CLI 配合本地 Messages HTTP 夹具，覆盖 sdk-minimal 的模型请求/并发/自动 Session ID 与恢复/工作目录/home 默认发现与配置优先级，以及完整 sdk 的 permission/compact/max-tokens/用户问题。SDK 构建 CI 在 Linux 上使用 JDK 17 和 21。独立的运行时打包流程覆盖 Linux、macOS 和 Windows。本地 macOS 测试也覆盖文件和图片的保存与读取。真实云模型、Windows/Linux 随包运行时和具体外部工具仍需在对应环境验证。Spring 集成的真实 MCP 与 OpenAI 兼容端点验证见 [Spring 文档](spring.zh.md)。
+本地验证覆盖 JDK 17/21、Java/Kotlin 消费、双向 RPC、Unicode、命令关联、并发 Session、独立订阅与溢出、回调嵌套请求、取消与超时、stderr、握手失败/异常退出/强制回收。离线 Office 单测覆盖选项校验、独立与绑定 Harness 生命周期、`DSH_OFFICE_SIDECAR` / `DSH_RESOURCE_CACHE` 发现、`downloadRuntime()`、`dsoffice` 参数传递、`manifest.json` 覆写、CLI 优雅超时与强制回收以及 Java 17 Builder 互操作。未经修改的真实 CLI 配合本地 Messages HTTP 夹具，覆盖 sdk-minimal 的模型请求/并发/自动 Session ID 与恢复/工作目录/home 默认发现与配置优先级，以及完整 sdk 的 permission/compact/max-tokens/用户问题。SDK 构建 CI 在 Linux 上使用 JDK 17 和 21。独立的运行时打包流程覆盖 Linux、macOS 和 Windows。本地 macOS 测试也覆盖文件和图片的保存与读取，以及未经修改的 LibreOffice Kit CLI 下独立/绑定模式的 `capabilities`、PDF/CSV 转换（含 `-` 开头工作表名）、工作簿重算与 PDF/表格 PNG 渲染。真实云模型、Windows/Linux 随包运行时和具体外部工具仍需在对应环境验证。Spring 集成的真实 MCP 与 OpenAI 兼容端点验证见 [Spring 文档](spring.zh.md)。

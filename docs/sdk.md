@@ -13,10 +13,13 @@ flowchart LR
   Harness --> Cli["HarnessCli"]
   App --> Attachments["AttachmentStore"]
   Attachments --> Cli
-  Client --> Runtime["Shared DSH process layer"]
+  App --> Office["HarnessOffice (standalone or harness-bound)"]
+  Office --> Runtime
+  Client --> Runtime["Shared process layer"]
   Cli --> Runtime
   Runtime --> SDK["dsh · SDK profile"]
   Runtime --> Command["dsh · command profile"]
+  Runtime --> Kit["dsoffice · LibreOffice Kit CLI"]
 ```
 
 `configuration` defines launch inputs, and `runtime/internal` handles process startup, termination, and temporary files. `client/internal` handles stdio JSON-RPC, request correlation, callbacks, and event delivery. `DeepSeekHarness` manages initialization and closure, and `HarnessSession` collects the activity associated with an input. The Java blocking methods delegate to the Kotlin suspending methods.
@@ -148,7 +151,7 @@ All timeouts use `java.time.Duration`. Use `HarnessConfig(requestTimeout = Durat
 
 Build the configuration with `HarnessConfig()` or Java's `HarnessConfig.builder()`; all settings are optional. The SDK makes immutable copies of collections and snapshots inline patch JSON when building the configuration. If `dshHome` is unset, the SDK preserves the child process environment and lets the runtime resolve its home, including handling blank variables and expanding `~`. Arguments are passed directly as argv without shell interpretation. Use `RuntimeCommand.of` for an explicit launcher prefix, such as a custom Node loader. The SDK does not modify the host environment.
 
-Kotlin's `closeAsync()` and Java's `close()` (including try-with-resources) use the same shutdown implementation. Closing a harness cancels active CLI and attachment calls. The RPC client stops host callbacks, tries to send `shutdown`, and allows the runtime to clean up after stdin reaches EOF. The process layer terminates processes that remain active, including descendants visible during termination, and confirms they have exited. Plugins own the resources they create. Closing is idempotent and terminal, and Kotlin shutdown runs in `NonCancellable`.
+Kotlin's `closeAsync()` and Java's `close()` (including try-with-resources) use the same shutdown implementation. Closing a harness cancels active CLI, attachment, and harness-bound Office calls. A standalone `HarnessOffice` also implements `AutoCloseable` with `close()` and `closeAsync()`; closing a harness-bound `HarnessOffice` cancels only its own active operations without closing the parent harness. The RPC client stops host callbacks, tries to send `shutdown`, and allows the runtime to clean up after stdin reaches EOF. The process layer terminates processes that remain active, including descendants visible during termination, and confirms they have exited. Plugins own the resources they create. Closing is idempotent and terminal, and Kotlin shutdown runs in `NonCancellable`.
 
 A local request timeout or coroutine cancellation withdraws any send that has not started, removes the pending request, and ignores late responses. The runtime can still execute a request once writing has started. Close the owner to stop the entire runtime. The SDK exposes no session abort operation.
 
@@ -283,10 +286,87 @@ try (var stream = attachments.openFile(attachmentId, fileLookup)) {
 
 `openFile(FileAttachment)` also accepts a reference the caller has already resolved. Both overloads return a stream after DSH verifies the bytes into a private temporary file. Closing the stream removes the file. This lets the handler report verification failures before sending headers and keeps download memory usage independent of file size. Kotlin uses the suspending overloads with `use { ... }`.
 
+## Local Office operations
+
+`HarnessOffice` runs the local LibreOffice Kit (`dsoffice`) CLI to inspect capabilities, convert Office files, recalculate workbooks, or render Office and PDF pages to PNG without starting an SDK session or calling a model. It works **standalone without a `dsh` runtime or `DeepSeekHarness`** whenever `@deepseek-ai/libreoffice-kit` (`dsoffice`), `DSH_OFFICE_SIDECAR`, or an explicit `RuntimeCommand` is available. When you already have a `DeepSeekHarness`, construct `HarnessOffice(harness)` to share its working directory, environment, bundled runtime downloader/cache, and close lifecycle. Kotlin exposes suspend methods; Java calls the blocking methods of the same names.
+
+```kotlin
+import com.elonzh.dshjk.office.*
+
+// Standalone: no DeepSeekHarness or dsh runtime required.
+HarnessOffice().use { office ->
+    val caps = office.capabilities()
+    val pdf = office.convert(Path.of("report.doc"), Path.of("report.pdf"))
+    val csv = office.convert(Path.of("budget.xlsx"), Path.of("summary.csv"), sheet = "Summary")
+    val book = office.recalculate(Path.of("budget.xls"), Path.of("budget.xlsx"))
+    val images = office.renderImages(
+        book.outputPath,
+        Path.of("budget-preview"),
+        OfficeRenderOptions(sheet = "Summary", range = "A1:D20", dpi = 144, maxPages = 10),
+        OfficeOptions(timeout = Duration.ofSeconds(60), fontDirectories = listOf(Path.of("/usr/share/fonts"))),
+    )
+}
+```
+
+In Java, use `try (var office = new HarnessOffice())` (or `OfficeConfig.builder()` / `new HarnessOffice(command)`), `OfficeOptions.builder()`, and `OfficeRenderOptions.builder()` (or shortcuts such as `OfficeRenderOptions.pages(1, 3)` and `OfficeRenderOptions.sheet("Summary", "A1:D20")`). To share a harness's settings and lifecycle, construct `new HarnessOffice(harness)` (optionally with an explicit `RuntimeCommand` or default `OfficeOptions`).
+
+`HarnessOffice` mirrors the `dsoffice` CLI contract:
+
+- `capabilities()` runs `dsoffice capabilities --json` and returns `OfficeCapabilities` (Kit version, `native` or `wasm` backend, supported conversion matrix, and rendering/recalculation metadata) with a 30-second default timeout.
+- `convert(input, output, sheet, options)` exports to the format selected by the output extension (`doc`/`docx`/`odt` → `pdf`/`docx`/`odt`/`txt`; `xls`/`xlsx`/`ods` → `pdf`/`xlsx`/`ods`/`csv`; `ppt`/`pptx`/`odp` → `pdf`/`pptx`/`odp`). Multi-sheet CSV export requires an exact `sheet` name. PDF outputs include `pageCount`.
+- `recalculate(input, output, options)` refreshes workbook formulas (`xls`/`xlsx`/`ods` → `xlsx`/`ods`).
+- `renderImages(input, outputDirectory, renderOptions, options)` renders Office or PDF inputs to PNG files plus a pretty-printed `manifest.json` updated with the final output paths, returning `OfficeRenderResult` (`rasterEngine`, `sourceSha256`, `pageCount`, `dpi`, `missingFonts`, and `OfficeRenderedImage` items with `index`, `rectangle`, `byteLength`, and location metadata). In `OfficeRenderOptions`, document/slide `pages` (distinct one-based numbers) and spreadsheet `sheet`/`range` are mutually exclusive; `dpi` (`24..600`), `maxPages` (`1..10000`), `maxPixels`, and `maxDimension` are validated upfront.
+- `OfficeOptions` mirrors the `dsoffice` limit and font flags (`timeout`, `maxInputBytes`, `maxOutputBytes`, `maxImageResolution`, `maxArchiveEntries`, `maxUncompressedBytes`, `fontDirectories`, `initialFontFamilies`, `fontFallbacks`, `maxFontFiles`, `maxFontFileBytes`, and `maxLoadedFontBytes`). Default options on `OfficeConfig` or `HarnessOffice` merge with per-call overrides.
+
+Relative input, output, and `fontDirectories` paths resolve against `cwd` (`OfficeConfig.cwd` or `HarnessConfig.cwd`). Provide a fresh file path or a fresh image directory under an existing parent; outputs are staged in a sibling private directory and published atomically without overwriting existing files. Successful outputs belong to the caller.
+
+`OfficeOptions.timeout` defaults to 2 minutes (`1 ms` to `2_147_483_647 ms`) and is passed to `dsoffice` via `--timeout-ms`. When the CLI aborts on deadline, it cleans up its scratch files and throws `OfficeException` with `code = "timeout"` and `exitCode`. If a process fails to exit within `terminateGrace`, the SDK terminates the process tree, discards staged output, and throws `RequestTimeoutException`. Other Kit failures throw `OfficeException` preserving `code` (such as `invalid-document`, `invalid-output`, `unsupported-format`, `output-too-large`, `unavailable`) and `exitCode` when the CLI process ran.
+
+CLI resolution follows this order:
+
+1. Explicit `command` (`HarnessOffice(command)`, `OfficeConfig.command`, or `HarnessOffice(harness, command)`), e.g. `RuntimeCommand.node(kitCliPath, nodeExecutable)` or `RuntimeCommand.executable("dsoffice")`.
+2. `DSH_OFFICE_SIDECAR` (from configured environment or host environment): an absolute sidecar directory containing `node/bin/node` (Windows: `node/bin/node.exe`) and `node_modules/@deepseek-ai/libreoffice-kit/lib/cli.js`.
+3. When bound to a `DeepSeekHarness` using `dshjk-runtime`: the cached sidecar under `DSH_RESOURCE_CACHE` (default `~/.cache/deepseek-harness/resources`). Call `office.downloadRuntime()` once (default 10-minute timeout, returns the absolute sidecar directory `Path`) to download and verify the upstream Office sidecar; later calls reuse the cache. Calling `downloadRuntime()` without `dshjk-runtime` via `HarnessOffice(harness)` throws `OfficeException` with `code = "unavailable"`.
+4. Local Node.js + npm resolution without downloading: standalone instances search `dsoffice` on `PATH`, the npm project in `processCwd`, then `dsh` on `PATH`; harness-bound instances search the configured DSH Node module or executable first, then `dsoffice` on `PATH` and `processCwd`.
+
+### Build an image for offline Office operations
+
+Install Node.js and `@deepseek-ai/libreoffice-kit` into `/opt/office` during the image build and set `DSH_OFFICE_SIDECAR=/opt/office`. On Linux, LibreOffice Kit runs its WASM engine and depends entirely on installed system fonts (or `OfficeOptions.fontDirectories`), rejecting with `unavailable` if no usable fonts are present. Install Latin Office metric-compatible fonts and any required CJK fonts in the final image.
+
+This Linux example expects a built `app.jar` that runs on Java 21 in the Docker build context. Match the `@deepseek-ai/libreoffice-kit` version to the tested `dsh` baseline (`0.2.3` for `0.2.2-rc.5`) and build for the deployment architecture.
+
+```dockerfile
+FROM node:24.17.0-bookworm-slim AS office
+
+RUN install -D /usr/local/bin/node /opt/office/node/bin/node \
+ && npm install --prefix /opt/office \
+      --omit=dev --include=optional --no-audit --no-fund \
+      @deepseek-ai/libreoffice-kit@0.2.3
+
+FROM eclipse-temurin:21-jre-noble
+
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      libatomic1 \
+      fonts-liberation \
+      fonts-crosextra-carlito \
+      fonts-crosextra-caladea \
+      fonts-noto-cjk \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=office /opt/office/ /opt/office/
+ENV DSH_OFFICE_SIDECAR=/opt/office
+
+WORKDIR /app
+COPY app.jar /app/app.jar
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+```
+
+Standalone `HarnessOffice()` works immediately inside this image with no `dsh` runtime and no call to `downloadRuntime()`. If `app.jar` also bundles `dshjk-runtime`, `DSH_OFFICE_SIDECAR=/opt/office` is shared automatically by both `HarnessOffice(harness)` and the agent's built-in Office tools. For air-gapped deployment, build the image in connected CI and transfer it using `docker save` and `docker load`.
+
 ## Compatibility and verification
 
-The compatibility baseline is the official npm package `@deepseek-ai/dsh@0.2.2-rc.5`. The upstream `packages/sdk/protocol/src/types.ts` defines the wire contract, and activity handling follows the upstream TypeScript and Python SDKs. You can specify another runtime version through `HarnessConfig.runtime`. [Upstream release](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.2-rc.5)
+The compatibility baseline is the official npm package `@deepseek-ai/dsh@0.2.2-rc.5` (and `@deepseek-ai/libreoffice-kit@0.2.3`). The upstream `packages/sdk/protocol/src/types.ts` defines the wire contract, and activity handling follows the upstream TypeScript and Python SDKs. You can specify another runtime version through `HarnessConfig.runtime` or `OfficeConfig.command`. [Upstream release](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.2-rc.5)
 
-Local tests cover JDK 17 and 21, Java and Kotlin consumers, bidirectional RPC, Unicode, command correlation, concurrent sessions, independent subscriptions and overflow, nested requests from callbacks, cancellation and timeouts, stderr, handshake failures, unexpected exits, and forced termination. Tests with the unmodified CLI and a local Messages HTTP fixture cover model requests, concurrency, automatic session IDs and recovery, working directories, home discovery, and configuration precedence under `sdk-minimal`. They also exercise permissions, compaction, token limits, and user questions under `sdk`.
+Local tests cover JDK 17 and 21, Java and Kotlin consumers, bidirectional RPC, Unicode, command correlation, concurrent sessions, independent subscriptions and overflow, nested requests from callbacks, cancellation and timeouts, stderr, handshake failures, unexpected exits, and forced termination. Offline Office tests cover option validation, standalone and harness-bound lifecycles, `DSH_OFFICE_SIDECAR` and `DSH_RESOURCE_CACHE` discovery, `downloadRuntime()`, `dsoffice` flag formatting, `manifest.json` rewriting, CLI timeouts vs forced termination, and Java 17 builders. Tests with the unmodified CLI and a local Messages HTTP fixture cover model requests, concurrency, automatic session IDs and recovery, working directories, home discovery, and configuration precedence under `sdk-minimal`. They also exercise permissions, compaction, token limits, and user questions under `sdk`.
 
-SDK build CI uses JDK 17 and 21 on Linux. A separate runtime packaging workflow targets Linux, macOS, and Windows. Local macOS tests also cover storing and reading files and images. Cloud model endpoints, Windows and Linux bundled runtime behavior, and specific external tools need verification in their respective environments. See the [Spring guide](spring.md) for integration tests with a real MCP server and a local OpenAI-compatible endpoint.
+SDK build CI uses JDK 17 and 21 on Linux. A separate runtime packaging workflow targets Linux, macOS, and Windows. Local macOS tests also cover storing and reading files and images as well as standalone and harness-bound Office capabilities, PDF/CSV conversion (including dash-prefixed sheet names), workbook recalculation, and PDF/worksheet PNG rendering with the unmodified LibreOffice Kit CLI. Cloud model endpoints, Windows and Linux bundled runtime behavior, and specific external tools need verification in their respective environments. See the [Spring guide](spring.md) for integration tests with a real MCP server and a local OpenAI-compatible endpoint.

@@ -14,7 +14,7 @@ The SDK is available from Maven Central. Gradle and Maven use the same coordinat
 
 ```kotlin
 dependencies {
-    implementation("com.elonzh:dshjk:0.2.2")
+    implementation("com.elonzh:dshjk:0.3.0")
 }
 ```
 
@@ -22,7 +22,7 @@ dependencies {
 <dependency>
     <groupId>com.elonzh</groupId>
     <artifactId>dshjk</artifactId>
-    <version>0.2.2</version>
+    <version>0.3.0</version>
 </dependency>
 ```
 
@@ -122,6 +122,8 @@ In Java, start with `HarnessConfig.builder()`, set any of `cwd`, `dshHome`, or `
 See the [SDK guide](docs/sdk.md) for session recovery, event subscriptions, and the full configuration reference.
 
 The SDK can also run DSH CLI profiles and store native attachments for agent inputs. See the [command and attachment APIs](docs/sdk.md#dsh-commands-and-attachments).
+
+For local Office capability inspection, conversion, workbook recalculation, and PNG rendering—standalone with `dsoffice` or attached to a `DeepSeekHarness`—see [Office operations](docs/sdk.md#local-office-operations).
 
 ## Spring Boot 4 and Spring AI
 

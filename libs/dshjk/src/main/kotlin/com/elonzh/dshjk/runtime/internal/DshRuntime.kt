@@ -3,6 +3,7 @@ package com.elonzh.dshjk.runtime.internal
 import com.elonzh.dshjk.configuration.HarnessConfig
 import com.elonzh.dshjk.configuration.HarnessPatch
 import com.elonzh.dshjk.configuration.ProfileInvocation
+import com.elonzh.dshjk.configuration.RuntimeCommand
 import com.elonzh.dshjk.configuration.patchDocument
 import kotlinx.coroutines.*
 import java.io.IOException
@@ -11,7 +12,7 @@ import java.time.Duration
 import java.util.concurrent.TimeUnit
 
 /** Shared process launch settings and lifetime for the owner's one-shot commands. */
-internal class DshRuntime(private val config: HarnessConfig) {
+internal class DshRuntime(internal val config: HarnessConfig) {
     private val admission = Any()
     private val commands = SupervisorJob()
     private val commandScope = CoroutineScope(commands + Dispatchers.IO)
@@ -62,23 +63,40 @@ internal class DshRuntime(private val config: HarnessConfig) {
                     addAll(arguments)
                 }
             }
-            val builder = ProcessBuilder(argv)
-                .directory(config.processCwd.toAbsolutePath().normalize().toFile())
-            builder.environment().apply {
-                if (!config.inheritEnvironment) clear()
-                putAll(config.environment)
-                config.dshHome?.let { put("DSH_HOME", it.toAbsolutePath().normalize().toString()) }
-            }
-            builder.configure()
-            val process = synchronized(admission) {
-                checkOpen()
-                builder.start()
-            }
-            return DshProcess(process, config.terminateGrace, files)
+            return start(argv, files, configure)
         } catch (error: Throwable) {
             try { files.close() } catch (cleanup: Exception) { error.addSuppressed(cleanup) }
             throw error
         }
+    }
+
+    fun launchLocal(
+        command: RuntimeCommand,
+        arguments: List<String>,
+        configure: ProcessBuilder.() -> Unit,
+    ): DshProcess {
+        checkOpen()
+        return start(listOf(command.executable) + command.arguments + arguments, null, configure)
+    }
+
+    private fun start(
+        argv: List<String>,
+        files: RuntimeFiles?,
+        configure: ProcessBuilder.() -> Unit,
+    ): DshProcess {
+        val builder = ProcessBuilder(argv)
+            .directory(config.processCwd.toAbsolutePath().normalize().toFile())
+        builder.environment().apply {
+            if (!config.inheritEnvironment) clear()
+            putAll(config.environment)
+            config.dshHome?.let { put("DSH_HOME", it.toAbsolutePath().normalize().toString()) }
+        }
+        builder.configure()
+        val process = synchronized(admission) {
+            checkOpen()
+            builder.start()
+        }
+        return DshProcess(process, config.terminateGrace, files)
     }
 }
 
@@ -86,7 +104,7 @@ internal class DshRuntime(private val config: HarnessConfig) {
 internal class DshProcess(
     val process: Process,
     private val grace: Duration,
-    private val files: RuntimeFiles,
+    private val files: RuntimeFiles? = null,
 ) : AutoCloseable {
     private val handle = process.toHandle()
     private val descendants = linkedSetOf<ProcessHandle>()
@@ -115,6 +133,6 @@ internal class DshProcess(
         if (remaining.isNotEmpty()) {
             throw IOException("Could not confirm termination of dsh descendants ${remaining.map(ProcessHandle::pid)}")
         }
-        files.close()
+        files?.close()
     }
 }

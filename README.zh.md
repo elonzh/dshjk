@@ -14,7 +14,7 @@ SDK 可从 Maven Central 获取。Gradle 和 Maven 使用相同的制品坐标�
 
 ```kotlin
 dependencies {
-    implementation("com.elonzh:dshjk:0.2.2")
+    implementation("com.elonzh:dshjk:0.3.0")
 }
 ```
 
@@ -22,7 +22,7 @@ dependencies {
 <dependency>
     <groupId>com.elonzh</groupId>
     <artifactId>dshjk</artifactId>
-    <version>0.2.2</version>
+    <version>0.3.0</version>
 </dependency>
 ```
 
@@ -122,6 +122,8 @@ Java 使用 `HarnessConfig.builder()`，按需设置 `cwd`、`dshHome` 或 `runt
 会话恢复、事件订阅与完整配置见 [SDK 文档](docs/sdk.zh.md)。
 
 SDK 也支持运行 DSH CLI profile，并为 Agent 输入存取原生附件。用法见[命令与附件 API](docs/sdk.zh.md#dsh-命令与附件)。
+
+如需在本地检查 Office 能力、转换文档、重算工作簿或渲染 PNG（可独立使用 `dsoffice` 无需 `dsh` 运行时，也可复用 `DeepSeekHarness`），参见 [Office 操作](docs/sdk.zh.md#本地-office-操作)。
 
 ## Spring Boot 4 与 Spring AI
 

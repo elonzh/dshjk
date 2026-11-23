@@ -2,8 +2,10 @@ package com.elonzh.dshjk.cli
 
 import com.elonzh.dshjk.configuration.HarnessPatch
 import com.elonzh.dshjk.configuration.ProfileInvocation
+import com.elonzh.dshjk.configuration.RuntimeCommand
 import com.elonzh.dshjk.error.CliException
 import com.elonzh.dshjk.error.RequestTimeoutException
+import com.elonzh.dshjk.runtime.internal.DshProcess
 import com.elonzh.dshjk.runtime.internal.DshRuntime
 import com.elonzh.dshjk.runtime.internal.RuntimeFiles
 import kotlinx.coroutines.Dispatchers
@@ -26,7 +28,7 @@ import java.time.Duration
 data class CliResult(val exitCode: Int, val stdout: String?, val stderr: String)
 
 /** Executes profiles with the owning harness's runtime, home, working directory and environment. */
-class HarnessCli internal constructor(private val runtime: DshRuntime) {
+class HarnessCli internal constructor(internal val runtime: DshRuntime) {
     /**
      * Runs one profile to completion. Stdin is empty unless supplied as a file.
      * A supplied output file is written directly and may contain partial output on failure.
@@ -70,6 +72,32 @@ private suspend fun DshRuntime.executeProfile(
     timeout: Duration = DEFAULT_CLI_TIMEOUT,
     arguments: List<String> = invocation.arguments,
     overlays: List<HarnessPatch> = emptyList(),
+): CliResult = captureCommand(invocation.profile, "dsh profile '${invocation.profile}'", timeout, inputFile, stdin, output) {
+    launch(invocation, arguments, overlays, it)
+}
+
+internal suspend fun DshRuntime.executeLocal(
+    command: RuntimeCommand,
+    arguments: List<String>,
+    timeout: Duration,
+    environment: Map<String, String> = emptyMap(),
+    name: String = "office",
+    description: String = "Office command",
+): CliResult = captureCommand(name, description, timeout) { redirects ->
+    launchLocal(command, arguments) {
+        environment().putAll(environment)
+        redirects()
+    }
+}
+
+private suspend fun captureCommand(
+    name: String,
+    description: String,
+    timeout: Duration,
+    inputFile: Path? = null,
+    stdin: InputStream? = null,
+    output: Path? = null,
+    launch: (ProcessBuilder.() -> Unit) -> DshProcess,
 ): CliResult {
     require(inputFile == null || stdin == null) { "Provide at most one stdin source" }
     require(timeout.toMillis() > 0) { "CLI timeout must be at least one millisecond" }
@@ -79,7 +107,7 @@ private suspend fun DshRuntime.executeProfile(
             val stderr = files.path("stderr")
             withTimeoutOrNull(timeout) {
                 coroutineScope {
-                    launch(invocation, arguments, overlays) {
+                    launch {
                         if (stdin == null) {
                             val path = inputFile?.toAbsolutePath()?.normalize() ?: Files.createFile(files.path("stdin"))
                             redirectInput(path.toFile())
@@ -93,8 +121,8 @@ private suspend fun DshRuntime.executeProfile(
                         }
                         try {
                             while (process.isAlive) {
-                                if (output == null) checkCaptureSize(stdout, invocation.profile, "stdout")
-                                checkCaptureSize(stderr, invocation.profile, "stderr")
+                                if (output == null) checkCaptureSize(stdout, name, description, "stdout")
+                                checkCaptureSize(stderr, name, description, "stderr")
                                 delay(25)
                             }
                             val exitCode = process.exitValue()
@@ -102,8 +130,8 @@ private suspend fun DshRuntime.executeProfile(
                             if (exitCode == 0) writer?.await()?.let { throw it }
                             CliResult(
                                 exitCode,
-                                if (output == null) readCapture(stdout, invocation.profile, "stdout") else null,
-                                readCapture(stderr, invocation.profile, "stderr"),
+                                if (output == null) readCapture(stdout, name, description, "stdout") else null,
+                                readCapture(stderr, name, description, "stderr"),
                             )
                         } finally {
                             writer?.cancel()
@@ -111,10 +139,10 @@ private suspend fun DshRuntime.executeProfile(
                         }
                     }
                 }
-            } ?: throw RequestTimeoutException("dsh profile '${invocation.profile}' timed out after $timeout")
+            } ?: throw RequestTimeoutException("$description timed out after $timeout")
         }
     } catch (error: IOException) {
-        throw CliException(invocation.profile, "Cannot execute dsh profile '${invocation.profile}': ${error.message}", error)
+        throw CliException(name, "Cannot execute $description: ${error.message}", error)
     }
 }
 
@@ -138,16 +166,16 @@ private suspend fun writeStdin(source: InputStream, pipe: OutputStream): IOExcep
     }
 }
 
-private fun checkCaptureSize(path: Path, profile: String, stream: String) {
-    if (Files.size(path) > CAPTURE_LIMIT) throw captureLimit(profile, stream)
+private fun checkCaptureSize(path: Path, name: String, description: String, stream: String) {
+    if (Files.size(path) > CAPTURE_LIMIT) throw captureLimit(name, description, stream)
 }
 
-private fun readCapture(path: Path, profile: String, stream: String): String =
+private fun readCapture(path: Path, name: String, description: String, stream: String): String =
     Files.newInputStream(path).use {
         val bytes = it.readNBytes(CAPTURE_LIMIT + 1)
-        if (bytes.size > CAPTURE_LIMIT) throw captureLimit(profile, stream)
+        if (bytes.size > CAPTURE_LIMIT) throw captureLimit(name, description, stream)
         String(bytes, Charsets.UTF_8)
     }
 
-private fun captureLimit(profile: String, stream: String) =
-    CliException(profile, "dsh profile '$profile' exceeded the $CAPTURE_LIMIT byte $stream capture limit")
+private fun captureLimit(name: String, description: String, stream: String) =
+    CliException(name, "$description exceeded the $CAPTURE_LIMIT byte $stream capture limit")
