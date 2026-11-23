@@ -285,6 +285,6 @@ try (var stream = attachments.openFile(attachmentId, fileLookup)) {
 
 ## 兼容与验证边界
 
-协议基线：上游 checkout `fcc0ad4621`，公开 npm CLI `@deepseek-ai/dsh@0.2.2-rc.1`。权威协议是上游 `packages/sdk/protocol/src/types.ts`；SDK 高层活动算法对齐该版本 TS/Python SDK。库不强制所有未来运行时与基线版本相等，但只宣称对基线完成验证。
+兼容性验证基线是官方 npm 包 `@deepseek-ai/dsh@0.2.2-rc.5`。上游的 `packages/sdk/protocol/src/types.ts` 定义通信协议，SDK 的活动处理逻辑对齐上游 TypeScript 和 Python SDK。也可通过 `HarnessConfig.runtime` 指定其他运行时版本。 [上游发布说明](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.2-rc.5)
 
-本地验证覆盖 JDK 17/21、Java/Kotlin 消费、双向 RPC、Unicode、命令关联、并发 Session、独立订阅与溢出、回调嵌套请求、取消与超时、stderr、握手失败/异常退出/强制回收。未经修改的真实 CLI 配合本地 Messages HTTP 夹具，覆盖 sdk-minimal 的模型请求/并发/自动 Session ID 与恢复/工作目录/home 默认发现与配置优先级，以及完整 sdk 的 permission/compact/max-tokens/用户问题。SDK 构建 CI 在 Linux 上使用 JDK 17 和 21；独立的运行时打包流程覆盖 Linux、macOS 和 Windows。本机执行只代表 macOS，真实云模型、Windows/Linux 平台、图片入库与具体外部工具仍需相应环境验证。Spring 集成的真实 MCP 与 OpenAI 兼容端点验证见 [Spring 文档](spring.zh.md)。
+本地验证覆盖 JDK 17/21、Java/Kotlin 消费、双向 RPC、Unicode、命令关联、并发 Session、独立订阅与溢出、回调嵌套请求、取消与超时、stderr、握手失败/异常退出/强制回收。未经修改的真实 CLI 配合本地 Messages HTTP 夹具，覆盖 sdk-minimal 的模型请求/并发/自动 Session ID 与恢复/工作目录/home 默认发现与配置优先级，以及完整 sdk 的 permission/compact/max-tokens/用户问题。SDK 构建 CI 在 Linux 上使用 JDK 17 和 21。独立的运行时打包流程覆盖 Linux、macOS 和 Windows。本地 macOS 测试也覆盖文件和图片的保存与读取。真实云模型、Windows/Linux 随包运行时和具体外部工具仍需在对应环境验证。Spring 集成的真实 MCP 与 OpenAI 兼容端点验证见 [Spring 文档](spring.zh.md)。

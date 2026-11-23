@@ -15,8 +15,11 @@ require(releaseVersion == null || releaseVersion.matches(Regex("""[0-9]+\.[0-9]+
 }
 allprojects { group = "com.elonzh"; version = releaseVersion ?: "0.1.0-SNAPSHOT" }
 val bundledTestRuntime = providers.gradleProperty("dshjkTestRuntimeJar").map { rootProject.file(it) }
+val npmTestRuntime = providers.environmentVariable("DSHJK_TEST_CLI").orElse("")
+val npmRuntimeLock = layout.projectDirectory.file("libs/dshjk-runtime/package-lock.json")
 subprojects {
-    if (bundledTestRuntime.isPresent && path in setOf(":dshjk", ":examples:spring-boot")) {
+    val testsNativeRuntime = path in setOf(":dshjk", ":examples:spring-boot")
+    if (bundledTestRuntime.isPresent && testsNativeRuntime) {
         val runtimeJar = bundledTestRuntime.get()
         require(runtimeJar.isFile) { "Bundled test runtime JAR does not exist: $runtimeJar" }
         pluginManager.withPlugin("java") {
@@ -37,7 +40,10 @@ subprojects {
     tasks.withType<JavaCompile>().configureEach { options.release.set(17) }
     tasks.withType<Test>().configureEach {
         useJUnitPlatform()
-        inputs.property("dshCli", providers.environmentVariable("DSHJK_TEST_CLI").orElse(""))
+        inputs.property("dshCli", npmTestRuntime)
+        if (testsNativeRuntime && !bundledTestRuntime.isPresent && npmTestRuntime.get().isNotBlank()) {
+            inputs.file(npmRuntimeLock).withPropertyName("dshRuntimeLock").withPathSensitivity(PathSensitivity.RELATIVE)
+        }
         val testJavaVersion = providers.gradleProperty("testJavaVersion").orElse("17")
         inputs.property("testJavaVersion", testJavaVersion)
         javaLauncher.set(project.extensions.getByType<JavaToolchainService>().launcherFor {

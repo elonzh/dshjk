@@ -46,7 +46,7 @@ class ProtocolTest {
         assertFailsWith<ProtocolException> { HarnessProtocol.query(obj("""{"kind":"command","execution":{"commandId":"c","result":{"kind":"error","text":" "}}}""")) }
     }
     @Test fun `the pinned native catalog has a concrete decoder for every builtin`() {
-        val names = HarnessProtocol.json.decodeFromString<List<String>>(javaClass.getResource("/builtin-session-event-types-0.2.2-rc.1.json")!!.readText())
+        val names = HarnessProtocol.json.decodeFromString<List<String>>(javaClass.getResource("/builtin-session-event-types.json")!!.readText())
         assertEquals(names.toSet(), SessionEventType.Builtin.entries.map { it.wireName }.toSet())
         assertEquals(names.size, SessionEventType.Builtin.entries.size)
         SessionEventType.Builtin.entries.forEach {

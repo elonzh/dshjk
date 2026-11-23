@@ -14,7 +14,7 @@ SDK 可从 Maven Central 获取。Gradle 和 Maven 使用相同的制品坐标�
 
 ```kotlin
 dependencies {
-    implementation("com.elonzh:dshjk:0.2.1")
+    implementation("com.elonzh:dshjk:0.2.2")
 }
 ```
 
@@ -22,19 +22,19 @@ dependencies {
 <dependency>
     <groupId>com.elonzh</groupId>
     <artifactId>dshjk</artifactId>
-    <version>0.2.1</version>
+    <version>0.2.2</version>
 </dependency>
 ```
 
 ## 随应用交付 dsh
 
-SDK 可直接启动 PATH 上的 `dsh`，也可以通过 `HarnessConfig.runtime` 指定可执行文件。使用模型前请在 dsh 中配置模型和凭据。当前兼容基线是 DeepSeek Harness `0.2.2-rc.1`。
+SDK 可直接启动 PATH 上的 `dsh`，也可以通过 `HarnessConfig.runtime` 指定可执行文件。使用模型前请在 dsh 中配置模型和凭据。已验证的 dsh 版本见 [SDK 兼容性](docs/sdk.zh.md#兼容与验证边界)。
 
-如果希望应用自带 dsh，添加可选运行时依赖，并按**部署平台**选择 classifier。支持 `linux-x64`、`linux-arm64`、`macos-x64`、`macos-arm64` 和 `windows-x64`。以下以 Linux x64 为例。运行时版本格式为 `<上游 dsh 版本>-<打包修订号>`。
+如果希望应用自带 dsh，添加可选运行时依赖，并按**部署平台**选择 classifier。支持 `linux-x64`、`linux-arm64`、`macos-x64`、`macos-arm64` 和 `windows-x64`。以下使用 Maven Central 已发布的 Linux x64 运行时。运行时版本格式为 `<上游 dsh 版本>-<打包修订号>`。
 
 ```kotlin
 dependencies {
-    runtimeOnly("com.elonzh:dshjk-runtime:0.2.2-rc.1-1:linux-x64")
+    runtimeOnly("com.elonzh:dshjk-runtime:0.2.2-rc.5-1:linux-x64")
 }
 ```
 
@@ -42,7 +42,7 @@ dependencies {
 <dependency>
     <groupId>com.elonzh</groupId>
     <artifactId>dshjk-runtime</artifactId>
-    <version>0.2.2-rc.1-1</version>
+    <version>0.2.2-rc.5-1</version>
     <classifier>linux-x64</classifier>
     <scope>runtime</scope>
 </dependency>
